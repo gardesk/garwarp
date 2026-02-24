@@ -150,11 +150,17 @@ impl ControlRequest {
         match parts.next() {
             Some("inspect") => {
                 let fields = parse_fields(parts)?;
+                if !fields_only(&fields, &["id"]) {
+                    return None;
+                }
                 let id = fields.get("id")?.clone();
                 Some(Self::InspectRequest { id })
             }
             Some("begin") => {
                 let fields = parse_fields(parts)?;
+                if !fields_only(&fields, &["id", "sender", "app_id", "parent"]) {
+                    return None;
+                }
                 let id = fields.get("id")?.clone();
                 let sender = fields.get("sender")?.clone();
                 let app_id = fields.get("app_id").cloned();
@@ -168,6 +174,9 @@ impl ControlRequest {
             }
             Some("transition") => {
                 let fields = parse_fields(parts)?;
+                if !fields_only(&fields, &["id", "sender", "state", "app_id"]) {
+                    return None;
+                }
                 let id = fields.get("id")?.clone();
                 let sender = fields.get("sender")?.clone();
                 let app_id = fields.get("app_id").cloned();
@@ -471,6 +480,12 @@ where
     Some(fields)
 }
 
+fn fields_only(fields: &std::collections::HashMap<String, String>, allowed: &[&str]) -> bool {
+    fields
+        .keys()
+        .all(|key| allowed.iter().any(|allowed| key == allowed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -565,6 +580,12 @@ mod tests {
     #[test]
     fn request_parse_rejects_duplicate_fields() {
         let parsed = ControlRequest::parse_line("inspect id=req-1 id=req-2");
+        assert_eq!(parsed, None);
+    }
+
+    #[test]
+    fn request_parse_rejects_unknown_fields() {
+        let parsed = ControlRequest::parse_line("inspect id=req-1 bogus=1");
         assert_eq!(parsed, None);
     }
 }
