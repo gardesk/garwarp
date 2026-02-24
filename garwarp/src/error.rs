@@ -14,6 +14,7 @@ pub enum PortalResponseCode {
 pub enum PortalError {
     CancelledByUser,
     InvalidRequestPayload,
+    UnauthorizedClient,
     InvalidParentWindow,
     OwnershipMismatch,
     RequestNotFound,
@@ -39,6 +40,10 @@ pub fn map_portal_error(error: &PortalError) -> ErrorMapping {
         PortalError::InvalidRequestPayload => ErrorMapping {
             code: PortalResponseCode::Failed,
             reason: "invalid_request",
+        },
+        PortalError::UnauthorizedClient => ErrorMapping {
+            code: PortalResponseCode::Failed,
+            reason: "unauthorized_client",
         },
         PortalError::InvalidParentWindow => ErrorMapping {
             code: PortalResponseCode::Failed,
@@ -118,6 +123,7 @@ mod tests {
         let errors = [
             PortalError::CancelledByUser,
             PortalError::InvalidRequestPayload,
+            PortalError::UnauthorizedClient,
             PortalError::InvalidParentWindow,
             PortalError::OwnershipMismatch,
             PortalError::RequestNotFound,

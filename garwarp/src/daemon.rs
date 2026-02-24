@@ -32,6 +32,7 @@ pub fn run() -> io::Result<()> {
     let _dbus_guard = acquire_dbus_name()?;
 
     let listener = UnixListener::bind(&paths.control_socket)?;
+    set_control_socket_permissions(&paths.control_socket)?;
     listener.set_nonblocking(true)?;
 
     logging::info("daemon_starting");
@@ -117,6 +118,37 @@ struct DaemonState {
 fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<()> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
+
+    let peer_uid = match peer_uid(reader.get_ref()) {
+        Ok(uid) => uid,
+        Err(error) => {
+            let mapping = map_portal_error(&PortalError::InternalFailure);
+            logging::warn(&format!("peer_identity_error={error}"));
+            return write_response(
+                reader.into_inner(),
+                ControlResponse::Error {
+                    code: mapping.code as u32,
+                    reason: mapping.reason.to_string(),
+                },
+            );
+        }
+    };
+    if !is_trusted_control_peer(peer_uid) {
+        let mapping = map_portal_error(&PortalError::UnauthorizedClient);
+        logging::warn(&format!(
+            "unauthorized_control_peer uid={} expected_uid={}",
+            peer_uid,
+            daemon_uid()
+        ));
+        return write_response(
+            reader.into_inner(),
+            ControlResponse::Error {
+                code: mapping.code as u32,
+                reason: mapping.reason.to_string(),
+            },
+        );
+    }
+
     let bytes_read = {
         let mut limited = reader.by_ref().take((MAX_CONTROL_LINE_BYTES + 1) as u64);
         limited.read_line(&mut line)?
@@ -414,7 +446,32 @@ fn quarantine_request_store(path: &Path) -> io::Result<Option<std::path::PathBuf
     Ok(Some(quarantined))
 }
 
+fn set_control_socket_permissions(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 fn trusted_sender(stream: &UnixStream) -> io::Result<String> {
+    peer_uid(stream).map(canonical_sender_for_uid)
+}
+
+fn canonical_sender_for_uid(uid: u32) -> String {
+    format!(":uid.{uid}")
+}
+
+fn is_trusted_control_peer(uid: u32) -> bool {
+    uid == daemon_uid()
+}
+
+fn daemon_uid() -> u32 {
+    unsafe { libc::geteuid() }
+}
+
+fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
     #[cfg(target_os = "linux")]
     {
         use std::mem;
@@ -442,7 +499,7 @@ fn trusted_sender(stream: &UnixStream) -> io::Result<String> {
         if len as usize != mem::size_of::<libc::ucred>() {
             return Err(io::Error::other("invalid peer credential size"));
         }
-        return Ok(canonical_sender_for_uid(cred.uid));
+        return Ok(cred.uid);
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -455,10 +512,6 @@ fn trusted_sender(stream: &UnixStream) -> io::Result<String> {
     }
 }
 
-fn canonical_sender_for_uid(uid: u32) -> String {
-    format!(":uid.{uid}")
-}
-
 fn persist_registry_state(path: &std::path::Path, registry: &RequestRegistry) {
     if let Err(error) = request_store::persist_registry(path, registry) {
         logging::warn(&format!("request_store_write_failed error={error}"));
@@ -469,7 +522,8 @@ fn persist_registry_state(path: &std::path::Path, registry: &RequestRegistry) {
 mod tests {
     use super::{
         DaemonState, MAX_CONTROL_LINE_BYTES, canonical_sender_for_uid, handle_connection,
-        load_registry_with_fallback, load_registry_with_recovery,
+        is_trusted_control_peer, load_registry_with_fallback, load_registry_with_recovery,
+        peer_uid, set_control_socket_permissions,
     };
     use garwarp_ipc::{ControlResponse, HealthStatus};
     use std::fs;
@@ -491,6 +545,31 @@ mod tests {
 
     fn local_sender() -> String {
         canonical_sender_for_uid(unsafe { libc::geteuid() })
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn local_peer_uid_is_trusted() {
+        let (_client, server) = UnixStream::pair().expect("pair should be created");
+        let uid = peer_uid(&server).expect("peer uid should be readable");
+        assert!(is_trusted_control_peer(uid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn control_socket_permissions_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = unique_temp_file();
+        fs::write(&path, "").expect("socket placeholder should be created");
+        set_control_socket_permissions(&path).expect("permissions should be set");
+        let mode = fs::metadata(&path)
+            .expect("metadata should be readable")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        let _ = fs::remove_file(path);
     }
 
     #[test]
