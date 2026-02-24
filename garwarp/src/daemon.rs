@@ -6,6 +6,7 @@ use std::thread;
 use garwarp_ipc::{ControlRequest, ControlResponse, HealthStatus, StatusResponse};
 
 use crate::config::Config;
+use crate::dbus::{self, SessionNameGuard};
 use crate::lock::SingleInstanceGuard;
 use crate::logging;
 use crate::runtime::RuntimePaths;
@@ -17,6 +18,7 @@ pub fn run() -> io::Result<()> {
 
     let _lock = SingleInstanceGuard::acquire(&paths.lock_file)?;
     remove_stale_socket(&paths.control_socket)?;
+    let _dbus_guard = acquire_dbus_name()?;
 
     let listener = UnixListener::bind(&paths.control_socket)?;
     listener.set_nonblocking(true)?;
@@ -49,6 +51,15 @@ pub fn run() -> io::Result<()> {
     let _ = fs::remove_file(&paths.control_socket);
     logging::info("daemon_stopped");
     Ok(())
+}
+
+fn acquire_dbus_name() -> io::Result<SessionNameGuard> {
+    SessionNameGuard::acquire().map_err(|error| {
+        io::Error::other(format!(
+            "failed to claim dbus name {}: {error}",
+            dbus::BACKEND_DBUS_NAME
+        ))
+    })
 }
 
 #[derive(Debug)]

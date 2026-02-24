@@ -1,5 +1,6 @@
 mod config;
 mod daemon;
+mod dbus;
 mod lock;
 mod logging;
 mod runtime;
