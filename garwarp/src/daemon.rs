@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
+use std::time::Duration;
 
 use garwarp_ipc::{ControlRequest, ControlResponse, HealthStatus, StatusResponse};
 
@@ -9,6 +10,7 @@ use crate::config::Config;
 use crate::dbus::{self, SessionNameGuard};
 use crate::lock::SingleInstanceGuard;
 use crate::logging;
+use crate::request::RequestRegistry;
 use crate::runtime::RuntimePaths;
 
 pub fn run() -> io::Result<()> {
@@ -27,7 +29,7 @@ pub fn run() -> io::Result<()> {
 
     let mut state = DaemonState {
         health: HealthStatus::Healthy,
-        in_flight_requests: 0,
+        requests: RequestRegistry::new(Duration::from_secs(30)),
         running: true,
     };
 
@@ -65,7 +67,7 @@ fn acquire_dbus_name() -> io::Result<SessionNameGuard> {
 #[derive(Debug)]
 struct DaemonState {
     health: HealthStatus,
-    in_flight_requests: usize,
+    requests: RequestRegistry,
     running: bool,
 }
 
@@ -78,7 +80,7 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
         Some(ControlRequest::Status) => ControlResponse::Status(StatusResponse {
             protocol_version: garwarp_ipc::PROTOCOL_VERSION,
             health: state.health,
-            in_flight_requests: state.in_flight_requests,
+            in_flight_requests: state.requests.in_flight_count(),
         }),
         Some(ControlRequest::Stop) => {
             state.health = HealthStatus::Stopping;
@@ -113,6 +115,9 @@ mod tests {
     use garwarp_ipc::{ControlResponse, HealthStatus};
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+
+    use crate::request::{RequestOwner, RequestRegistry, RequestState};
 
     #[test]
     fn status_request_returns_status_response() {
@@ -123,9 +128,21 @@ mod tests {
 
         let mut state = DaemonState {
             health: HealthStatus::Healthy,
-            in_flight_requests: 2,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
             running: true,
         };
+        state
+            .requests
+            .begin_at("req-1", RequestOwner::new(":1.2", None), Instant::now())
+            .expect("request should be created");
+        state
+            .requests
+            .transition(
+                "req-1",
+                &RequestOwner::new(":1.2", None),
+                RequestState::AwaitingUser,
+            )
+            .expect("request should transition");
         handle_connection(server, &mut state).expect("status should be handled");
 
         let mut response_line = String::new();
@@ -138,7 +155,7 @@ mod tests {
         match response {
             ControlResponse::Status(status) => {
                 assert_eq!(status.health, HealthStatus::Healthy);
-                assert_eq!(status.in_flight_requests, 2);
+                assert_eq!(status.in_flight_requests, 1);
             }
             _ => panic!("expected status response"),
         }
@@ -154,7 +171,7 @@ mod tests {
 
         let mut state = DaemonState {
             health: HealthStatus::Healthy,
-            in_flight_requests: 0,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
             running: true,
         };
         handle_connection(server, &mut state).expect("stop should be handled");

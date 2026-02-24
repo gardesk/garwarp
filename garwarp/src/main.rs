@@ -3,6 +3,7 @@ mod daemon;
 mod dbus;
 mod lock;
 mod logging;
+mod request;
 mod runtime;
 
 use std::env;
