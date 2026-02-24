@@ -198,6 +198,8 @@ pub struct StatusResponse {
     pub protocol_version: u16,
     pub health: HealthStatus,
     pub in_flight_requests: usize,
+    pub total_requests: usize,
+    pub terminal_requests: usize,
 }
 
 impl StatusResponse {
@@ -207,6 +209,8 @@ impl StatusResponse {
             protocol_version: PROTOCOL_VERSION,
             health: HealthStatus::Healthy,
             in_flight_requests: 0,
+            total_requests: 0,
+            terminal_requests: 0,
         }
     }
 }
@@ -240,10 +244,12 @@ impl ControlResponse {
     pub fn to_line(&self) -> String {
         match self {
             Self::Status(status) => format!(
-                "status protocol={} health={} in_flight={}\n",
+                "status protocol={} health={} in_flight={} total={} terminal={}\n",
                 status.protocol_version,
                 status.health.as_str(),
-                status.in_flight_requests
+                status.in_flight_requests,
+                status.total_requests,
+                status.terminal_requests
             ),
             Self::AckStopping => "ack stopping\n".to_string(),
             Self::RequestList { ids } => {
@@ -284,6 +290,8 @@ impl ControlResponse {
                 let mut protocol_version = None;
                 let mut health = None;
                 let mut in_flight_requests = None;
+                let mut total_requests = None;
+                let mut terminal_requests = None;
 
                 for part in parts {
                     let (key, value) = part
@@ -310,6 +318,20 @@ impl ControlResponse {
                                     .map_err(|_| ParseError::InvalidField(part.to_string()))?,
                             );
                         }
+                        "total" => {
+                            total_requests = Some(
+                                value
+                                    .parse::<usize>()
+                                    .map_err(|_| ParseError::InvalidField(part.to_string()))?,
+                            );
+                        }
+                        "terminal" => {
+                            terminal_requests = Some(
+                                value
+                                    .parse::<usize>()
+                                    .map_err(|_| ParseError::InvalidField(part.to_string()))?,
+                            );
+                        }
                         _ => return Err(ParseError::InvalidField(part.to_string())),
                     }
                 }
@@ -320,6 +342,9 @@ impl ControlResponse {
                     health: health.ok_or(ParseError::MissingField("health"))?,
                     in_flight_requests: in_flight_requests
                         .ok_or(ParseError::MissingField("in_flight"))?,
+                    total_requests: total_requests.ok_or(ParseError::MissingField("total"))?,
+                    terminal_requests: terminal_requests
+                        .ok_or(ParseError::MissingField("terminal"))?,
                 };
                 Ok(Self::Status(status))
             }
@@ -527,6 +552,8 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             health: HealthStatus::Healthy,
             in_flight_requests: 7,
+            total_requests: 10,
+            terminal_requests: 3,
         });
         let line = response.to_line();
         let parsed = ControlResponse::parse_line(&line).expect("response should parse");
@@ -569,11 +596,15 @@ mod tests {
         assert_eq!(response.protocol_version, PROTOCOL_VERSION);
         assert_eq!(response.health, HealthStatus::Healthy);
         assert_eq!(response.in_flight_requests, 0);
+        assert_eq!(response.total_requests, 0);
+        assert_eq!(response.terminal_requests, 0);
     }
 
     #[test]
     fn malformed_status_is_rejected() {
-        let parsed = ControlResponse::parse_line("status protocol=one health=healthy in_flight=0");
+        let parsed = ControlResponse::parse_line(
+            "status protocol=one health=healthy in_flight=0 total=0 terminal=0",
+        );
         assert!(parsed.is_err());
     }
 

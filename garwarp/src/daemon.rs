@@ -117,6 +117,8 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
             protocol_version: garwarp_ipc::PROTOCOL_VERSION,
             health: state.health,
             in_flight_requests: state.requests.in_flight_count(),
+            total_requests: state.requests.total_count(),
+            terminal_requests: state.requests.terminal_count(),
         }),
         Some(ControlRequest::Stop) => {
             state.health = HealthStatus::Stopping;
@@ -388,6 +390,8 @@ mod tests {
             ControlResponse::Status(status) => {
                 assert_eq!(status.health, HealthStatus::Healthy);
                 assert_eq!(status.in_flight_requests, 1);
+                assert_eq!(status.total_requests, 1);
+                assert_eq!(status.terminal_requests, 0);
             }
             _ => panic!("expected status response"),
         }

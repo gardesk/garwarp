@@ -173,6 +173,8 @@ fn run(command: Command) -> io::Result<()> {
                     println!("protocol={}", status.protocol_version);
                     println!("health={}", status.health.as_str());
                     println!("in_flight={}", status.in_flight_requests);
+                    println!("total={}", status.total_requests);
+                    println!("terminal={}", status.terminal_requests);
                     Ok(())
                 }
                 ControlResponse::Error { code, reason } => Err(io::Error::other(format!(

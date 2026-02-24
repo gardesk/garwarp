@@ -18,7 +18,7 @@ Current scaffold includes:
 
 ## Local Commands
 1. Start daemon: `cargo run -p garwarp -- daemon`
-2. Check health: `cargo run -p garwarpctl -- status`
+2. Check health and request counters: `cargo run -p garwarpctl -- status`
 3. Stop daemon: `cargo run -p garwarpctl -- stop`
 4. Verify D-Bus activation: `./scripts/test-dbus-activation.sh`
 5. Create mock request: `cargo run -p garwarpctl -- begin req-1 :1.2 - x11:0x2a`

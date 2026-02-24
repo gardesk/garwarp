@@ -265,6 +265,19 @@ impl RequestRegistry {
     }
 
     #[must_use]
+    pub fn total_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[must_use]
+    pub fn terminal_count(&self) -> usize {
+        self.entries
+            .values()
+            .filter(|entry| entry.state.is_terminal())
+            .count()
+    }
+
+    #[must_use]
     pub fn state(&self, id: &str) -> Option<RequestState> {
         self.entries.get(id).map(|entry| entry.state)
     }
@@ -560,6 +573,25 @@ mod tests {
             registry.prune_terminal(now + Duration::from_secs(10), Duration::from_millis(10));
         assert!(removed.is_empty());
         assert_eq!(registry.state("req-1"), Some(RequestState::Pending));
+    }
+
+    #[test]
+    fn count_helpers_return_expected_values() {
+        let now = Instant::now();
+        let mut registry = RequestRegistry::new(Duration::from_secs(5));
+        registry
+            .begin_at("req-1", owner(":1.2"), None, now)
+            .expect("request should be created");
+        registry
+            .begin_at("req-2", owner(":1.3"), None, now)
+            .expect("request should be created");
+        registry
+            .transition_at("req-2", &owner(":1.3"), RequestState::Cancelled, now)
+            .expect("request should transition");
+
+        assert_eq!(registry.total_count(), 2);
+        assert_eq!(registry.in_flight_count(), 1);
+        assert_eq!(registry.terminal_count(), 1);
     }
 
     #[test]
