@@ -58,6 +58,16 @@ pub fn run() -> io::Result<()> {
             persist_registry_state(&paths.request_store, &state.requests);
         }
 
+        let pruned = state
+            .requests
+            .prune_terminal(Instant::now(), config.terminal_retention);
+        for id in &pruned {
+            logging::info(&format!("request_pruned id={id}"));
+        }
+        if !pruned.is_empty() {
+            persist_registry_state(&paths.request_store, &state.requests);
+        }
+
         match listener.accept() {
             Ok((stream, _address)) => {
                 if let Err(error) = handle_connection(stream, &mut state) {

@@ -232,6 +232,20 @@ impl RequestRegistry {
         expired
     }
 
+    pub fn prune_terminal(&mut self, now: Instant, retention: Duration) -> Vec<String> {
+        let mut removed = Vec::new();
+        self.entries.retain(|id, entry| {
+            let should_remove = entry.state.is_terminal()
+                && now.saturating_duration_since(entry.last_updated_at) >= retention;
+            if should_remove {
+                removed.push(id.clone());
+            }
+            !should_remove
+        });
+        removed.sort();
+        removed
+    }
+
     #[must_use]
     pub fn in_flight_count(&self) -> usize {
         self.entries
@@ -492,5 +506,44 @@ mod tests {
             registry.parent_window("req-window"),
             Some(Some(ParentWindowContext::X11 { window_id: 42 }))
         );
+    }
+
+    #[test]
+    fn prune_terminal_removes_old_terminal_requests() {
+        let now = Instant::now();
+        let mut registry = RequestRegistry::new(Duration::from_secs(5));
+        let request_owner = owner(":1.2");
+        registry
+            .begin_at("req-1", request_owner.clone(), None, now)
+            .expect("request should be created");
+        registry
+            .transition_at("req-1", &request_owner, RequestState::AwaitingUser, now)
+            .expect("request should transition to awaiting user");
+        registry
+            .transition_at(
+                "req-1",
+                &request_owner,
+                RequestState::Cancelled,
+                now + Duration::from_millis(10),
+            )
+            .expect("request should transition to cancelled");
+
+        let removed =
+            registry.prune_terminal(now + Duration::from_millis(30), Duration::from_millis(15));
+        assert_eq!(removed, vec!["req-1".to_string()]);
+        assert_eq!(registry.state("req-1"), None);
+    }
+
+    #[test]
+    fn prune_terminal_keeps_in_flight_requests() {
+        let now = Instant::now();
+        let mut registry = RequestRegistry::new(Duration::from_secs(5));
+        registry
+            .begin_at("req-1", owner(":1.2"), None, now)
+            .expect("request should be created");
+        let removed =
+            registry.prune_terminal(now + Duration::from_secs(10), Duration::from_millis(10));
+        assert!(removed.is_empty());
+        assert_eq!(registry.state("req-1"), Some(RequestState::Pending));
     }
 }

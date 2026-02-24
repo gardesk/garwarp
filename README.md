@@ -23,3 +23,7 @@ Current scaffold includes:
 4. Verify D-Bus activation: `./scripts/test-dbus-activation.sh`
 5. Create mock request: `cargo run -p garwarpctl -- begin req-1 :1.2 - x11:0x2a`
 6. Transition mock request: `cargo run -p garwarpctl -- transition req-1 :1.2 awaiting_user`
+
+## Runtime Tuning
+1. `GARWARP_REQUEST_TIMEOUT_MS`: timeout before in-flight requests are marked `expired`.
+2. `GARWARP_TERMINAL_RETENTION_MS`: retention window before terminal requests are pruned.
