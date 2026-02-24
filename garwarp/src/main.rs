@@ -7,6 +7,7 @@ mod logging;
 mod request;
 mod request_store;
 mod runtime;
+mod validate;
 mod window;
 
 use std::env;

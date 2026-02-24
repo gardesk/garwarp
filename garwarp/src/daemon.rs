@@ -16,6 +16,7 @@ use crate::logging;
 use crate::request::{RequestOwner, RequestRegistry, RequestState};
 use crate::request_store;
 use crate::runtime::RuntimePaths;
+use crate::validate::validate_request_identity;
 use crate::window::parse_optional_parent_window;
 
 pub fn run() -> io::Result<()> {
@@ -118,6 +119,18 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
             app_id,
             parent_window,
         }) => {
+            let validation = validate_request_identity(&id, &sender, app_id.as_deref());
+            if let Err(error) = validation {
+                let mapping = map_portal_error(&error);
+                return write_response(
+                    reader.into_inner(),
+                    ControlResponse::Error {
+                        code: mapping.code as u32,
+                        reason: mapping.reason.to_string(),
+                    },
+                );
+            }
+
             let owner = RequestOwner::new(sender, app_id);
             let parsed_parent_window = match parse_optional_parent_window(parent_window.as_deref())
             {
@@ -157,6 +170,18 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
             app_id,
             target,
         }) => {
+            let validation = validate_request_identity(&id, &sender, app_id.as_deref());
+            if let Err(error) = validation {
+                let mapping = map_portal_error(&error);
+                return write_response(
+                    reader.into_inner(),
+                    ControlResponse::Error {
+                        code: mapping.code as u32,
+                        reason: mapping.reason.to_string(),
+                    },
+                );
+            }
+
             let owner = RequestOwner::new(sender, app_id);
             let target_state = map_transition_target(target);
             match state.requests.transition(&id, &owner, target_state) {
@@ -406,6 +431,64 @@ mod tests {
             ControlResponse::Error {
                 code: 2,
                 reason: "invalid_parent_window".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_request_id_maps_to_invalid_request() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"begin id=req/1 sender=:1.2 parent=x11:0x2a\n")
+            .expect("begin request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        handle_connection(server, &mut state).expect("begin should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::Error {
+                code: 2,
+                reason: "invalid_request".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_sender_maps_to_invalid_request() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"transition id=req-1 sender=org.test.App state=cancelled\n")
+            .expect("transition request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        handle_connection(server, &mut state).expect("transition should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::Error {
+                code: 2,
+                reason: "invalid_request".to_string(),
             }
         );
     }
