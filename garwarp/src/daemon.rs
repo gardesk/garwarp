@@ -496,6 +496,35 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_request_fields_map_to_invalid_request() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"inspect id=req-1 id=req-2\n")
+            .expect("inspect request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        handle_connection(server, &mut state).expect("request should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::Error {
+                code: 2,
+                reason: "invalid_request".to_string(),
+            }
+        );
+    }
+
+    #[test]
     fn begin_request_tracks_parent_window_context() {
         let (mut client, server) = UnixStream::pair().expect("pair should be created");
         client

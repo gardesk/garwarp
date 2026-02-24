@@ -463,6 +463,9 @@ where
     let mut fields = std::collections::HashMap::new();
     for part in parts {
         let (key, value) = part.split_once('=')?;
+        if fields.contains_key(key) {
+            return None;
+        }
         fields.insert(key.to_string(), value.to_string());
     }
     Some(fields)
@@ -557,5 +560,11 @@ mod tests {
     fn malformed_status_is_rejected() {
         let parsed = ControlResponse::parse_line("status protocol=one health=healthy in_flight=0");
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn request_parse_rejects_duplicate_fields() {
+        let parsed = ControlRequest::parse_line("inspect id=req-1 id=req-2");
+        assert_eq!(parsed, None);
     }
 }
