@@ -4,6 +4,7 @@ mod dbus;
 mod error;
 mod lock;
 mod logging;
+mod portal;
 mod request;
 mod request_store;
 mod runtime;
