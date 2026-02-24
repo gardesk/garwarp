@@ -40,6 +40,18 @@ impl RequestState {
             Self::Fulfilled | Self::Cancelled | Self::Failed | Self::Expired
         )
     }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::AwaitingUser => "awaiting_user",
+            Self::Fulfilled => "fulfilled",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+            Self::Expired => "expired",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

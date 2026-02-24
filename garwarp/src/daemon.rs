@@ -2,17 +2,20 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use garwarp_ipc::{ControlRequest, ControlResponse, HealthStatus, StatusResponse};
+use garwarp_ipc::{
+    ControlRequest, ControlResponse, HealthStatus, RequestTransitionTarget, StatusResponse,
+};
 
 use crate::config::Config;
 use crate::dbus::{self, SessionNameGuard};
-use crate::error::{PortalError, map_portal_error};
+use crate::error::{PortalError, map_portal_error, map_request_error};
 use crate::lock::SingleInstanceGuard;
 use crate::logging;
-use crate::request::RequestRegistry;
+use crate::request::{RequestOwner, RequestRegistry, RequestState};
 use crate::runtime::RuntimePaths;
+use crate::window::parse_optional_parent_window;
 
 pub fn run() -> io::Result<()> {
     let config = Config::from_env();
@@ -35,6 +38,11 @@ pub fn run() -> io::Result<()> {
     };
 
     while state.running {
+        let expired = state.requests.expire_stale(Instant::now());
+        for id in expired {
+            logging::warn(&format!("request_expired id={id}"));
+        }
+
         match listener.accept() {
             Ok((stream, _address)) => {
                 if let Err(error) = handle_connection(stream, &mut state) {
@@ -88,6 +96,64 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
             state.running = false;
             ControlResponse::AckStopping
         }
+        Some(ControlRequest::BeginRequest {
+            id,
+            sender,
+            app_id,
+            parent_window,
+        }) => {
+            let owner = RequestOwner::new(sender, app_id);
+            let parsed_parent_window = match parse_optional_parent_window(parent_window.as_deref())
+            {
+                Ok(parent_window) => parent_window,
+                Err(_) => {
+                    let mapping = map_portal_error(&PortalError::InvalidParentWindow);
+                    return write_response(
+                        reader.into_inner(),
+                        ControlResponse::Error {
+                            reason: mapping.reason.to_string(),
+                        },
+                    );
+                }
+            };
+
+            match state
+                .requests
+                .begin(id.clone(), owner, parsed_parent_window)
+            {
+                Ok(()) => ControlResponse::AckRequest {
+                    id,
+                    state: "pending".to_string(),
+                },
+                Err(error) => {
+                    let mapping = map_request_error(&error);
+                    ControlResponse::Error {
+                        reason: mapping.reason.to_string(),
+                    }
+                }
+            }
+        }
+        Some(ControlRequest::TransitionRequest {
+            id,
+            sender,
+            app_id,
+            target,
+        }) => {
+            let owner = RequestOwner::new(sender, app_id);
+            let target_state = map_transition_target(target);
+            match state.requests.transition(&id, &owner, target_state) {
+                Ok(()) => ControlResponse::AckRequest {
+                    id,
+                    state: target_state.as_str().to_string(),
+                },
+                Err(error) => {
+                    let mapping = map_request_error(&error);
+                    ControlResponse::Error {
+                        reason: mapping.reason.to_string(),
+                    }
+                }
+            }
+        }
         None => {
             let mapping = map_portal_error(&PortalError::InvalidRequestPayload);
             ControlResponse::Error {
@@ -113,6 +179,15 @@ fn remove_stale_socket(path: &std::path::Path) -> io::Result<()> {
     Ok(())
 }
 
+fn map_transition_target(target: RequestTransitionTarget) -> RequestState {
+    match target {
+        RequestTransitionTarget::AwaitingUser => RequestState::AwaitingUser,
+        RequestTransitionTarget::Fulfilled => RequestState::Fulfilled,
+        RequestTransitionTarget::Cancelled => RequestState::Cancelled,
+        RequestTransitionTarget::Failed => RequestState::Failed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DaemonState, handle_connection};
@@ -122,6 +197,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use crate::request::{RequestOwner, RequestRegistry, RequestState};
+    use crate::window::ParentWindowContext;
 
     #[test]
     fn status_request_returns_status_response() {
@@ -222,5 +298,106 @@ mod tests {
                 reason: "invalid_request".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn begin_request_tracks_parent_window_context() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"begin id=req-1 sender=:1.2 parent=x11:0x2a\n")
+            .expect("begin request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        handle_connection(server, &mut state).expect("begin should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::AckRequest {
+                id: "req-1".to_string(),
+                state: "pending".to_string(),
+            }
+        );
+        assert_eq!(
+            state.requests.parent_window("req-1"),
+            Some(Some(ParentWindowContext::X11 { window_id: 42 }))
+        );
+        assert_eq!(state.requests.in_flight_count(), 1);
+    }
+
+    #[test]
+    fn invalid_parent_window_maps_to_stable_reason() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"begin id=req-1 sender=:1.2 parent=wayland:abc\n")
+            .expect("begin request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        handle_connection(server, &mut state).expect("begin should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::Error {
+                reason: "invalid_parent_window".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn transition_owner_mismatch_maps_to_stable_reason() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"transition id=req-1 sender=:1.7 state=cancelled\n")
+            .expect("transition request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        state
+            .requests
+            .begin_at(
+                "req-1",
+                RequestOwner::new(":1.2", None),
+                Some(ParentWindowContext::X11 { window_id: 42 }),
+                Instant::now(),
+            )
+            .expect("request should be created");
+        handle_connection(server, &mut state).expect("transition should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::Error {
+                reason: "ownership_mismatch".to_string(),
+            }
+        );
+        assert_eq!(state.requests.state("req-1"), Some(RequestState::Pending));
     }
 }

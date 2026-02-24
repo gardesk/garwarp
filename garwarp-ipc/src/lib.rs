@@ -38,22 +38,133 @@ impl HealthStatus {
 pub enum ControlRequest {
     Status,
     Stop,
+    BeginRequest {
+        id: String,
+        sender: String,
+        app_id: Option<String>,
+        parent_window: Option<String>,
+    },
+    TransitionRequest {
+        id: String,
+        sender: String,
+        app_id: Option<String>,
+        target: RequestTransitionTarget,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestTransitionTarget {
+    AwaitingUser,
+    Fulfilled,
+    Cancelled,
+    Failed,
+}
+
+impl RequestTransitionTarget {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingUser => "awaiting_user",
+            Self::Fulfilled => "fulfilled",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+        }
+    }
+
+    fn parse(input: &str) -> Option<Self> {
+        match input {
+            "awaiting_user" => Some(Self::AwaitingUser),
+            "fulfilled" => Some(Self::Fulfilled),
+            "cancelled" => Some(Self::Cancelled),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
 }
 
 impl ControlRequest {
     #[must_use]
-    pub fn as_line(&self) -> &'static str {
+    pub fn as_line(&self) -> String {
         match self {
-            Self::Status => "status",
-            Self::Stop => "stop",
+            Self::Status => "status".to_string(),
+            Self::Stop => "stop".to_string(),
+            Self::BeginRequest {
+                id,
+                sender,
+                app_id,
+                parent_window,
+            } => {
+                let mut parts = vec![
+                    "begin".to_string(),
+                    format!("id={id}"),
+                    format!("sender={sender}"),
+                ];
+                if let Some(app_id) = app_id {
+                    parts.push(format!("app_id={app_id}"));
+                }
+                if let Some(parent_window) = parent_window {
+                    parts.push(format!("parent={parent_window}"));
+                }
+                parts.join(" ")
+            }
+            Self::TransitionRequest {
+                id,
+                sender,
+                app_id,
+                target,
+            } => {
+                let mut parts = vec![
+                    "transition".to_string(),
+                    format!("id={id}"),
+                    format!("sender={sender}"),
+                    format!("state={}", target.as_str()),
+                ];
+                if let Some(app_id) = app_id {
+                    parts.push(format!("app_id={app_id}"));
+                }
+                parts.join(" ")
+            }
         }
     }
 
     #[must_use]
     pub fn parse_line(input: &str) -> Option<Self> {
-        match input.trim() {
-            "status" => Some(Self::Status),
-            "stop" => Some(Self::Stop),
+        let trimmed = input.trim();
+        if trimmed == "status" {
+            return Some(Self::Status);
+        }
+        if trimmed == "stop" {
+            return Some(Self::Stop);
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        match parts.next() {
+            Some("begin") => {
+                let fields = parse_fields(parts)?;
+                let id = fields.get("id")?.clone();
+                let sender = fields.get("sender")?.clone();
+                let app_id = fields.get("app_id").cloned();
+                let parent_window = fields.get("parent").cloned();
+                Some(Self::BeginRequest {
+                    id,
+                    sender,
+                    app_id,
+                    parent_window,
+                })
+            }
+            Some("transition") => {
+                let fields = parse_fields(parts)?;
+                let id = fields.get("id")?.clone();
+                let sender = fields.get("sender")?.clone();
+                let app_id = fields.get("app_id").cloned();
+                let target = RequestTransitionTarget::parse(fields.get("state")?)?;
+                Some(Self::TransitionRequest {
+                    id,
+                    sender,
+                    app_id,
+                    target,
+                })
+            }
             _ => None,
         }
     }
@@ -81,6 +192,7 @@ impl StatusResponse {
 pub enum ControlResponse {
     Status(StatusResponse),
     AckStopping,
+    AckRequest { id: String, state: String },
     Error { reason: String },
 }
 
@@ -95,6 +207,9 @@ impl ControlResponse {
                 status.in_flight_requests
             ),
             Self::AckStopping => "ack stopping\n".to_string(),
+            Self::AckRequest { id, state } => {
+                format!("ack request id={} state={}\n", id, state)
+            }
             Self::Error { reason } => format!("error reason={}\n", reason),
         }
     }
@@ -149,6 +264,24 @@ impl ControlResponse {
             }
             Some("ack") => match parts.next() {
                 Some("stopping") => Ok(Self::AckStopping),
+                Some("request") => {
+                    let mut id = None;
+                    let mut state = None;
+                    for part in parts {
+                        let (key, value) = part
+                            .split_once('=')
+                            .ok_or(ParseError::InvalidField(part.to_string()))?;
+                        match key {
+                            "id" => id = Some(value.to_string()),
+                            "state" => state = Some(value.to_string()),
+                            _ => return Err(ParseError::InvalidField(part.to_string())),
+                        }
+                    }
+                    Ok(Self::AckRequest {
+                        id: id.ok_or(ParseError::MissingField("id"))?,
+                        state: state.ok_or(ParseError::MissingField("state"))?,
+                    })
+                }
                 Some(other) => Err(ParseError::UnknownToken(other.to_string())),
                 None => Err(ParseError::MissingField("ack")),
             },
@@ -193,15 +326,45 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+fn parse_fields<'a, I>(parts: I) -> Option<std::collections::HashMap<String, String>>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let mut fields = std::collections::HashMap::new();
+    for part in parts {
+        let (key, value) = part.split_once('=')?;
+        fields.insert(key.to_string(), value.to_string());
+    }
+    Some(fields)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ControlRequest, ControlResponse, HealthStatus, PROTOCOL_VERSION, StatusResponse};
+    use super::{
+        ControlRequest, ControlResponse, HealthStatus, PROTOCOL_VERSION, RequestTransitionTarget,
+        StatusResponse,
+    };
 
     #[test]
     fn request_parse_roundtrip() {
-        for request in [ControlRequest::Status, ControlRequest::Stop] {
+        for request in [
+            ControlRequest::Status,
+            ControlRequest::Stop,
+            ControlRequest::BeginRequest {
+                id: "req-1".to_string(),
+                sender: ":1.2".to_string(),
+                app_id: Some("org.test.App".to_string()),
+                parent_window: Some("x11:0x2a".to_string()),
+            },
+            ControlRequest::TransitionRequest {
+                id: "req-1".to_string(),
+                sender: ":1.2".to_string(),
+                app_id: Some("org.test.App".to_string()),
+                target: RequestTransitionTarget::Cancelled,
+            },
+        ] {
             let line = request.as_line();
-            let parsed = ControlRequest::parse_line(line);
+            let parsed = ControlRequest::parse_line(&line);
             assert_eq!(parsed, Some(request));
         }
     }
@@ -220,10 +383,17 @@ mod tests {
 
     #[test]
     fn response_ack_roundtrip() {
-        let response = ControlResponse::AckStopping;
-        let line = response.to_line();
-        let parsed = ControlResponse::parse_line(&line).expect("response should parse");
-        assert_eq!(parsed, response);
+        for response in [
+            ControlResponse::AckStopping,
+            ControlResponse::AckRequest {
+                id: "req-1".to_string(),
+                state: "pending".to_string(),
+            },
+        ] {
+            let line = response.to_line();
+            let parsed = ControlResponse::parse_line(&line).expect("response should parse");
+            assert_eq!(parsed, response);
+        }
     }
 
     #[test]
