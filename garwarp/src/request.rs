@@ -52,6 +52,19 @@ impl RequestState {
             Self::Expired => "expired",
         }
     }
+
+    #[must_use]
+    pub fn parse(input: &str) -> Option<Self> {
+        match input {
+            "pending" => Some(Self::Pending),
+            "awaiting_user" => Some(Self::AwaitingUser),
+            "fulfilled" => Some(Self::Fulfilled),
+            "cancelled" => Some(Self::Cancelled),
+            "failed" => Some(Self::Failed),
+            "expired" => Some(Self::Expired),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +94,14 @@ impl RequestEntry {
             last_updated_at: now,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestRecord {
+    pub id: String,
+    pub owner: RequestOwner,
+    pub parent_window: Option<ParentWindowContext>,
+    pub state: RequestState,
 }
 
 #[derive(Debug)]
@@ -120,6 +141,28 @@ impl RequestRegistry {
         }
         self.entries
             .insert(id.clone(), RequestEntry::new(id, owner, parent_window, now));
+        Ok(())
+    }
+
+    pub fn restore_record(
+        &mut self,
+        record: RequestRecord,
+        now: Instant,
+    ) -> Result<(), RequestError> {
+        if self.entries.contains_key(&record.id) {
+            return Err(RequestError::AlreadyExists(record.id));
+        }
+        self.entries.insert(
+            record.id.clone(),
+            RequestEntry {
+                id: record.id,
+                owner: record.owner,
+                parent_window: record.parent_window,
+                state: record.state,
+                started_at: now,
+                last_updated_at: now,
+            },
+        );
         Ok(())
     }
 
@@ -210,6 +253,27 @@ impl RequestRegistry {
     #[must_use]
     pub fn parent_window(&self, id: &str) -> Option<Option<ParentWindowContext>> {
         self.entries.get(id).map(|entry| entry.parent_window)
+    }
+
+    #[must_use]
+    pub fn owner(&self, id: &str) -> Option<RequestOwner> {
+        self.entries.get(id).map(|entry| entry.owner.clone())
+    }
+
+    #[must_use]
+    pub fn records(&self) -> Vec<RequestRecord> {
+        let mut records = self
+            .entries
+            .values()
+            .map(|entry| RequestRecord {
+                id: entry.id.clone(),
+                owner: entry.owner.clone(),
+                parent_window: entry.parent_window,
+                state: entry.state,
+            })
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        records
     }
 }
 

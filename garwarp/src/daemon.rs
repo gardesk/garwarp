@@ -14,6 +14,7 @@ use crate::error::{PortalError, map_portal_error, map_request_error};
 use crate::lock::SingleInstanceGuard;
 use crate::logging;
 use crate::request::{RequestOwner, RequestRegistry, RequestState};
+use crate::request_store;
 use crate::runtime::RuntimePaths;
 use crate::window::parse_optional_parent_window;
 
@@ -31,22 +32,37 @@ pub fn run() -> io::Result<()> {
 
     logging::info("daemon_starting");
 
+    let (requests, recovered_ids) =
+        load_registry_with_recovery(&paths.request_store, config.request_timeout)?;
+    if !recovered_ids.is_empty() {
+        logging::warn(&format!(
+            "request_recovery_expired count={}",
+            recovered_ids.len()
+        ));
+    }
+
     let mut state = DaemonState {
         health: HealthStatus::Healthy,
-        requests: RequestRegistry::new(Duration::from_secs(30)),
+        requests,
         running: true,
     };
+    persist_registry_state(&paths.request_store, &state.requests);
 
     while state.running {
         let expired = state.requests.expire_stale(Instant::now());
-        for id in expired {
+        for id in &expired {
             logging::warn(&format!("request_expired id={id}"));
+        }
+        if !expired.is_empty() {
+            persist_registry_state(&paths.request_store, &state.requests);
         }
 
         match listener.accept() {
             Ok((stream, _address)) => {
                 if let Err(error) = handle_connection(stream, &mut state) {
                     logging::warn(&format!("request_error={error}"));
+                } else {
+                    persist_registry_state(&paths.request_store, &state.requests);
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -188,16 +204,41 @@ fn map_transition_target(target: RequestTransitionTarget) -> RequestState {
     }
 }
 
+fn load_registry_with_recovery(
+    request_store_path: &std::path::Path,
+    timeout: Duration,
+) -> io::Result<(RequestRegistry, Vec<String>)> {
+    let mut registry = request_store::load_registry(request_store_path, timeout)?;
+    let expired = registry.recover_after_restart(Instant::now());
+    Ok((registry, expired))
+}
+
+fn persist_registry_state(path: &std::path::Path, registry: &RequestRegistry) {
+    if let Err(error) = request_store::persist_registry(path, registry) {
+        logging::warn(&format!("request_store_write_failed error={error}"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DaemonState, handle_connection};
+    use super::{DaemonState, handle_connection, load_registry_with_recovery};
     use garwarp_ipc::{ControlResponse, HealthStatus};
+    use std::fs;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
+    use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
     use crate::request::{RequestOwner, RequestRegistry, RequestState};
+    use crate::request_store;
     use crate::window::ParentWindowContext;
+
+    fn unique_temp_file() -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        std::env::temp_dir().join(format!("garwarp-daemon-recovery-{nanos}.state"))
+    }
 
     #[test]
     fn status_request_returns_status_response() {
@@ -399,5 +440,51 @@ mod tests {
             }
         );
         assert_eq!(state.requests.state("req-1"), Some(RequestState::Pending));
+    }
+
+    #[test]
+    fn startup_recovery_expires_non_terminal_requests() {
+        let path = unique_temp_file();
+
+        let mut persisted = RequestRegistry::new(Duration::from_secs(5));
+        persisted
+            .begin_at(
+                "req-pending",
+                RequestOwner::new(":1.2", None),
+                None,
+                Instant::now(),
+            )
+            .expect("request should be created");
+        persisted
+            .begin_at(
+                "req-done",
+                RequestOwner::new(":1.3", None),
+                None,
+                Instant::now(),
+            )
+            .expect("request should be created");
+        persisted
+            .transition(
+                "req-done",
+                &RequestOwner::new(":1.3", None),
+                RequestState::AwaitingUser,
+            )
+            .expect("request should transition");
+        persisted
+            .transition(
+                "req-done",
+                &RequestOwner::new(":1.3", None),
+                RequestState::Fulfilled,
+            )
+            .expect("request should transition");
+        request_store::persist_registry(&path, &persisted).expect("request store should persist");
+
+        let (loaded, recovered) = load_registry_with_recovery(&path, Duration::from_secs(5))
+            .expect("registry should load");
+        assert_eq!(recovered, vec!["req-pending".to_string()]);
+        assert_eq!(loaded.state("req-pending"), Some(RequestState::Expired));
+        assert_eq!(loaded.state("req-done"), Some(RequestState::Fulfilled));
+
+        let _ = fs::remove_file(path);
     }
 }

@@ -10,6 +10,7 @@ pub struct RuntimePaths {
     pub root: PathBuf,
     pub control_socket: PathBuf,
     pub lock_file: PathBuf,
+    pub request_store: PathBuf,
 }
 
 impl RuntimePaths {
@@ -26,10 +27,12 @@ impl RuntimePaths {
         let root = base.join(DEFAULT_RUNTIME_SUBDIR);
         let control_socket = root.join(DEFAULT_CONTROL_SOCKET);
         let lock_file = root.join("garwarp.lock");
+        let request_store = root.join("requests.state");
         Self {
             root,
             control_socket,
             lock_file,
+            request_store,
         }
     }
 
@@ -55,6 +58,10 @@ mod tests {
         assert_eq!(
             paths.lock_file,
             PathBuf::from("/tmp/runtime/garwarp/garwarp.lock")
+        );
+        assert_eq!(
+            paths.request_store,
+            PathBuf::from("/tmp/runtime/garwarp/requests.state")
         );
     }
 }

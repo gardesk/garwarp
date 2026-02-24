@@ -7,6 +7,15 @@ pub enum ParentWindowContext {
     X11 { window_id: u64 },
 }
 
+impl ParentWindowContext {
+    #[must_use]
+    pub fn as_str(self) -> String {
+        match self {
+            Self::X11 { window_id } => format!("x11:0x{window_id:x}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParentWindowError {
     Empty,
