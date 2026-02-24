@@ -1,8 +1,9 @@
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use garwarp_ipc::{
     ControlRequest, ControlResponse, HealthStatus, RequestTransitionTarget, StatusResponse,
@@ -35,8 +36,8 @@ pub fn run() -> io::Result<()> {
 
     logging::info("daemon_starting");
 
-    let (requests, recovered_ids) =
-        load_registry_with_recovery(&paths.request_store, config.request_timeout)?;
+    let (requests, recovered_ids, startup_degraded) =
+        load_registry_with_fallback(&paths.request_store, config.request_timeout);
     if !recovered_ids.is_empty() {
         logging::warn(&format!(
             "request_recovery_expired count={}",
@@ -45,7 +46,11 @@ pub fn run() -> io::Result<()> {
     }
 
     let mut state = DaemonState {
-        health: HealthStatus::Healthy,
+        health: if startup_degraded {
+            HealthStatus::Degraded
+        } else {
+            HealthStatus::Healthy
+        },
         requests,
         running: true,
     };
@@ -337,6 +342,48 @@ fn load_registry_with_recovery(
     Ok((registry, expired))
 }
 
+fn load_registry_with_fallback(
+    request_store_path: &Path,
+    timeout: Duration,
+) -> (RequestRegistry, Vec<String>, bool) {
+    match load_registry_with_recovery(request_store_path, timeout) {
+        Ok((registry, recovered_ids)) => (registry, recovered_ids, false),
+        Err(error) => {
+            logging::warn(&format!("request_store_load_failed error={error}"));
+            match quarantine_request_store(request_store_path) {
+                Ok(Some(path)) => logging::warn(&format!(
+                    "request_store_quarantined path={}",
+                    path.display()
+                )),
+                Ok(None) => {}
+                Err(error) => {
+                    logging::warn(&format!("request_store_quarantine_failed error={error}"))
+                }
+            }
+            (RequestRegistry::new(timeout), Vec::new(), true)
+        }
+    }
+}
+
+fn quarantine_request_store(path: &Path) -> io::Result<Option<std::path::PathBuf>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("requests.state");
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+
+    let quarantined = parent.join(format!("{file_name}.corrupt-{nanos}"));
+    fs::rename(path, &quarantined)?;
+    Ok(Some(quarantined))
+}
+
 fn persist_registry_state(path: &std::path::Path, registry: &RequestRegistry) {
     if let Err(error) = request_store::persist_registry(path, registry) {
         logging::warn(&format!("request_store_write_failed error={error}"));
@@ -346,7 +393,8 @@ fn persist_registry_state(path: &std::path::Path, registry: &RequestRegistry) {
 #[cfg(test)]
 mod tests {
     use super::{
-        DaemonState, MAX_CONTROL_LINE_BYTES, handle_connection, load_registry_with_recovery,
+        DaemonState, MAX_CONTROL_LINE_BYTES, handle_connection, load_registry_with_fallback,
+        load_registry_with_recovery,
     };
     use garwarp_ipc::{ControlResponse, HealthStatus};
     use std::fs;
@@ -1099,5 +1147,40 @@ mod tests {
         assert_eq!(loaded.state("req-done"), Some(RequestState::Fulfilled));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn invalid_store_load_uses_empty_registry_and_quarantines_file() {
+        let path = unique_temp_file();
+        fs::write(&path, "id=req-1\tsender=:1.2\tstate=bogus\n")
+            .expect("invalid store should be written");
+
+        let parent = path
+            .parent()
+            .expect("temp file should have parent")
+            .to_path_buf();
+        let file_name = path
+            .file_name()
+            .expect("temp file should have name")
+            .to_string_lossy()
+            .to_string();
+
+        let (registry, recovered_ids, degraded) =
+            load_registry_with_fallback(&path, Duration::from_secs(5));
+        assert!(degraded);
+        assert!(recovered_ids.is_empty());
+        assert_eq!(registry.total_count(), 0);
+        assert!(!path.exists());
+
+        let quarantined = fs::read_dir(&parent)
+            .expect("parent dir should be readable")
+            .filter_map(Result::ok)
+            .find(|entry| {
+                let name = entry.file_name().to_string_lossy().to_string();
+                name.starts_with(&format!("{file_name}.corrupt-"))
+            })
+            .map(|entry| entry.path())
+            .expect("quarantined store should exist");
+        fs::remove_file(quarantined).expect("quarantined store should be removed");
     }
 }
