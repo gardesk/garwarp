@@ -29,6 +29,7 @@ fn main() {
 enum Command {
     Status,
     Stop,
+    List,
     Inspect {
         id: String,
     },
@@ -53,6 +54,7 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
         [] => Ok(Command::Status),
         [command] if command == "status" => Ok(Command::Status),
         [command] if command == "stop" => Ok(Command::Stop),
+        [command] if command == "list" => Ok(Command::List),
         [command, id] if command == "inspect" => Ok(Command::Inspect { id: id.clone() }),
         [command] if command == "version" || command == "--version" || command == "-V" => {
             Ok(Command::Version)
@@ -198,6 +200,28 @@ fn run(command: Command) -> io::Result<()> {
                 )),
             }
         }
+        Command::List => {
+            let response = send_request(ControlRequest::ListRequests)?;
+            match response {
+                ControlResponse::RequestList { ids } => {
+                    if ids.is_empty() {
+                        println!("ids=-");
+                    } else {
+                        for id in ids {
+                            println!("id={id}");
+                        }
+                    }
+                    Ok(())
+                }
+                ControlResponse::Error { code, reason } => Err(io::Error::other(format!(
+                    "daemon error: code={code} reason={reason}"
+                ))),
+                other => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unexpected response: {other:?}"),
+                )),
+            }
+        }
         Command::Inspect { id } => {
             let response = send_request(ControlRequest::InspectRequest { id })?;
             match response {
@@ -323,6 +347,7 @@ fn print_help() {
     println!("commands:");
     println!("  status (default)");
     println!("  stop");
+    println!("  list");
     println!("  inspect <id>");
     println!("  begin <id> <sender> [app_id|-] [parent_window|-]");
     println!("  transition <id> <sender> <awaiting_user|fulfilled|cancelled|failed> [app_id|-]");
@@ -395,6 +420,13 @@ mod tests {
                 id: "req-1".to_string()
             }
         );
+    }
+
+    #[test]
+    fn parse_list_command() {
+        let args = vec!["list".to_string()];
+        let command = parse_command(&args).expect("list command should parse");
+        assert_eq!(command, Command::List);
     }
 
     #[test]

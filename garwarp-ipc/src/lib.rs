@@ -38,6 +38,7 @@ impl HealthStatus {
 pub enum ControlRequest {
     Status,
     Stop,
+    ListRequests,
     InspectRequest {
         id: String,
     },
@@ -91,6 +92,7 @@ impl ControlRequest {
         match self {
             Self::Status => "status".to_string(),
             Self::Stop => "stop".to_string(),
+            Self::ListRequests => "list".to_string(),
             Self::InspectRequest { id } => format!("inspect id={id}"),
             Self::BeginRequest {
                 id,
@@ -139,6 +141,9 @@ impl ControlRequest {
         }
         if trimmed == "stop" {
             return Some(Self::Stop);
+        }
+        if trimmed == "list" {
+            return Some(Self::ListRequests);
         }
 
         let mut parts = trimmed.split_whitespace();
@@ -201,6 +206,9 @@ impl StatusResponse {
 pub enum ControlResponse {
     Status(StatusResponse),
     AckStopping,
+    RequestList {
+        ids: Vec<String>,
+    },
     AckRequest {
         id: String,
         state: String,
@@ -229,6 +237,14 @@ impl ControlResponse {
                 status.in_flight_requests
             ),
             Self::AckStopping => "ack stopping\n".to_string(),
+            Self::RequestList { ids } => {
+                let ids = if ids.is_empty() {
+                    "-".to_string()
+                } else {
+                    ids.join(",")
+                };
+                format!("list ids={ids}\n")
+            }
             Self::AckRequest { id, state } => {
                 format!("ack request id={} state={}\n", id, state)
             }
@@ -321,6 +337,32 @@ impl ControlResponse {
                 Some(other) => Err(ParseError::UnknownToken(other.to_string())),
                 None => Err(ParseError::MissingField("ack")),
             },
+            Some("list") => {
+                let mut ids = None;
+                for part in parts {
+                    let (key, value) = part
+                        .split_once('=')
+                        .ok_or(ParseError::InvalidField(part.to_string()))?;
+                    match key {
+                        "ids" => {
+                            if value == "-" {
+                                ids = Some(Vec::new());
+                            } else {
+                                let parsed =
+                                    value.split(',').map(str::to_string).collect::<Vec<_>>();
+                                if parsed.iter().any(|id| id.is_empty()) {
+                                    return Err(ParseError::InvalidField(part.to_string()));
+                                }
+                                ids = Some(parsed);
+                            }
+                        }
+                        _ => return Err(ParseError::InvalidField(part.to_string())),
+                    }
+                }
+                Ok(Self::RequestList {
+                    ids: ids.ok_or(ParseError::MissingField("ids"))?,
+                })
+            }
             Some("snapshot") => {
                 let mut id = None;
                 let mut state = None;
@@ -438,6 +480,7 @@ mod tests {
         for request in [
             ControlRequest::Status,
             ControlRequest::Stop,
+            ControlRequest::ListRequests,
             ControlRequest::InspectRequest {
                 id: "req-1".to_string(),
             },
@@ -476,6 +519,10 @@ mod tests {
     fn response_ack_roundtrip() {
         for response in [
             ControlResponse::AckStopping,
+            ControlResponse::RequestList {
+                ids: vec!["req-1".to_string(), "req-2".to_string()],
+            },
+            ControlResponse::RequestList { ids: Vec::new() },
             ControlResponse::AckRequest {
                 id: "req-1".to_string(),
                 state: "pending".to_string(),

@@ -123,6 +123,15 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
             state.running = false;
             ControlResponse::AckStopping
         }
+        Some(ControlRequest::ListRequests) => {
+            let ids = state
+                .requests
+                .records()
+                .into_iter()
+                .map(|record| record.id)
+                .collect::<Vec<_>>();
+            ControlResponse::RequestList { ids }
+        }
         Some(ControlRequest::InspectRequest { id }) => {
             let validation = validate_request_id(&id);
             if let Err(error) = validation {
@@ -408,6 +417,53 @@ mod tests {
         assert_eq!(response, ControlResponse::AckStopping);
         assert_eq!(state.health, HealthStatus::Stopping);
         assert!(!state.running);
+    }
+
+    #[test]
+    fn list_requests_returns_sorted_ids() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"list\n")
+            .expect("list request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        state
+            .requests
+            .begin_at(
+                "req-b",
+                RequestOwner::new(":1.2", None),
+                None,
+                Instant::now(),
+            )
+            .expect("request should be created");
+        state
+            .requests
+            .begin_at(
+                "req-a",
+                RequestOwner::new(":1.3", None),
+                None,
+                Instant::now(),
+            )
+            .expect("request should be created");
+
+        handle_connection(server, &mut state).expect("list should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::RequestList {
+                ids: vec!["req-a".to_string(), "req-b".to_string()],
+            }
+        );
     }
 
     #[test]
