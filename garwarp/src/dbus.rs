@@ -15,7 +15,7 @@ impl SessionNameGuard {
         {
             let object_server = connection.object_server();
             object_server.at(BACKEND_OBJECT_PATH, ScreenshotPortal)?;
-            object_server.at(BACKEND_OBJECT_PATH, OpenUriPortal)?;
+            object_server.at(BACKEND_OBJECT_PATH, FileChooserPortal)?;
             object_server.at(BACKEND_OBJECT_PATH, AppChooserPortal)?;
         }
         Ok(Self {
@@ -36,10 +36,10 @@ impl ScreenshotPortal {
 }
 
 #[derive(Debug)]
-struct OpenUriPortal;
+struct FileChooserPortal;
 
-#[interface(name = "org.freedesktop.impl.portal.OpenURI")]
-impl OpenUriPortal {
+#[interface(name = "org.freedesktop.impl.portal.FileChooser")]
+impl FileChooserPortal {
     #[zbus(property)]
     fn version(&self) -> u32 {
         INTERFACE_VERSION
@@ -60,7 +60,8 @@ impl AppChooserPortal {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppChooserPortal, BACKEND_OBJECT_PATH, INTERFACE_VERSION, OpenUriPortal, ScreenshotPortal,
+        AppChooserPortal, BACKEND_OBJECT_PATH, FileChooserPortal, INTERFACE_VERSION,
+        ScreenshotPortal,
     };
 
     #[test]
@@ -71,7 +72,7 @@ mod tests {
     #[test]
     fn portal_interfaces_report_expected_version() {
         assert_eq!(ScreenshotPortal.version(), INTERFACE_VERSION);
-        assert_eq!(OpenUriPortal.version(), INTERFACE_VERSION);
+        assert_eq!(FileChooserPortal.version(), INTERFACE_VERSION);
         assert_eq!(AppChooserPortal.version(), INTERFACE_VERSION);
     }
 }

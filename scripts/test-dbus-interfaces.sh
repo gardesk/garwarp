@@ -39,7 +39,7 @@ wait "$pid"
 '
 
 rg -q "org.freedesktop.impl.portal.Screenshot" "$introspection_file"
-rg -q "org.freedesktop.impl.portal.OpenURI" "$introspection_file"
+rg -q "org.freedesktop.impl.portal.FileChooser" "$introspection_file"
 rg -q "org.freedesktop.impl.portal.AppChooser" "$introspection_file"
 
 printf "dbus interface export smoke test passed\n"
