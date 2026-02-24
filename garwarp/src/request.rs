@@ -191,6 +191,11 @@ impl RequestRegistry {
             return Err(RequestError::OwnerMismatch(id.to_string()));
         }
 
+        if entry.state == target && target.is_terminal() {
+            entry.last_updated_at = now;
+            return Ok(());
+        }
+
         if !is_valid_transition(entry.state, target) {
             return Err(RequestError::InvalidTransition {
                 id: id.to_string(),
@@ -545,5 +550,27 @@ mod tests {
             registry.prune_terminal(now + Duration::from_secs(10), Duration::from_millis(10));
         assert!(removed.is_empty());
         assert_eq!(registry.state("req-1"), Some(RequestState::Pending));
+    }
+
+    #[test]
+    fn duplicate_cancel_is_idempotent() {
+        let now = Instant::now();
+        let request_owner = owner(":1.2");
+        let mut registry = RequestRegistry::new(Duration::from_secs(5));
+        registry
+            .begin_at("req-1", request_owner.clone(), None, now)
+            .expect("request should be created");
+        registry
+            .transition_at("req-1", &request_owner, RequestState::Cancelled, now)
+            .expect("first cancel should succeed");
+        registry
+            .transition_at(
+                "req-1",
+                &request_owner,
+                RequestState::Cancelled,
+                now + Duration::from_millis(50),
+            )
+            .expect("duplicate cancel should be idempotent");
+        assert_eq!(registry.state("req-1"), Some(RequestState::Cancelled));
     }
 }
