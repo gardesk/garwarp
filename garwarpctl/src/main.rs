@@ -29,6 +29,9 @@ fn main() {
 enum Command {
     Status,
     Stop,
+    Inspect {
+        id: String,
+    },
     Version,
     Help,
     Begin {
@@ -50,6 +53,7 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
         [] => Ok(Command::Status),
         [command] if command == "status" => Ok(Command::Status),
         [command] if command == "stop" => Ok(Command::Stop),
+        [command, id] if command == "inspect" => Ok(Command::Inspect { id: id.clone() }),
         [command] if command == "version" || command == "--version" || command == "-V" => {
             Ok(Command::Version)
         }
@@ -194,6 +198,35 @@ fn run(command: Command) -> io::Result<()> {
                 )),
             }
         }
+        Command::Inspect { id } => {
+            let response = send_request(ControlRequest::InspectRequest { id })?;
+            match response {
+                ControlResponse::RequestSnapshot {
+                    id,
+                    state,
+                    sender,
+                    app_id,
+                    parent_window,
+                } => {
+                    println!("id={id}");
+                    println!("state={state}");
+                    println!("sender={sender}");
+                    println!("app_id={}", app_id.unwrap_or_else(|| "-".to_string()));
+                    println!(
+                        "parent_window={}",
+                        parent_window.unwrap_or_else(|| "-".to_string())
+                    );
+                    Ok(())
+                }
+                ControlResponse::Error { code, reason } => Err(io::Error::other(format!(
+                    "daemon error: code={code} reason={reason}"
+                ))),
+                other => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unexpected response: {other:?}"),
+                )),
+            }
+        }
         Command::Begin {
             id,
             sender,
@@ -290,6 +323,7 @@ fn print_help() {
     println!("commands:");
     println!("  status (default)");
     println!("  stop");
+    println!("  inspect <id>");
     println!("  begin <id> <sender> [app_id|-] [parent_window|-]");
     println!("  transition <id> <sender> <awaiting_user|fulfilled|cancelled|failed> [app_id|-]");
     println!("  await|fulfill|cancel|fail <id> <sender> [app_id|-]");
@@ -347,6 +381,18 @@ mod tests {
                 sender: ":1.2".to_string(),
                 app_id: None,
                 target: RequestTransitionTarget::Cancelled,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_inspect_command() {
+        let args = vec!["inspect".to_string(), "req-1".to_string()];
+        let command = parse_command(&args).expect("inspect command should parse");
+        assert_eq!(
+            command,
+            Command::Inspect {
+                id: "req-1".to_string()
             }
         );
     }

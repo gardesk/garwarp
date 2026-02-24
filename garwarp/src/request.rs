@@ -280,6 +280,16 @@ impl RequestRegistry {
     }
 
     #[must_use]
+    pub fn record(&self, id: &str) -> Option<RequestRecord> {
+        self.entries.get(id).map(|entry| RequestRecord {
+            id: entry.id.clone(),
+            owner: entry.owner.clone(),
+            parent_window: entry.parent_window,
+            state: entry.state,
+        })
+    }
+
+    #[must_use]
     pub fn records(&self) -> Vec<RequestRecord> {
         let mut records = self
             .entries
@@ -572,5 +582,37 @@ mod tests {
             )
             .expect("duplicate cancel should be idempotent");
         assert_eq!(registry.state("req-1"), Some(RequestState::Cancelled));
+    }
+
+    #[test]
+    fn record_returns_current_snapshot() {
+        let now = Instant::now();
+        let request_owner = owner(":1.2");
+        let mut registry = RequestRegistry::new(Duration::from_secs(5));
+        registry
+            .begin_at(
+                "req-1",
+                request_owner.clone(),
+                Some(ParentWindowContext::X11 { window_id: 42 }),
+                now,
+            )
+            .expect("request should be created");
+        registry
+            .transition_at(
+                "req-1",
+                &request_owner,
+                RequestState::AwaitingUser,
+                now + Duration::from_millis(1),
+            )
+            .expect("request should transition");
+
+        let snapshot = registry.record("req-1").expect("record should exist");
+        assert_eq!(snapshot.id, "req-1");
+        assert_eq!(snapshot.owner, request_owner);
+        assert_eq!(snapshot.state, RequestState::AwaitingUser);
+        assert_eq!(
+            snapshot.parent_window,
+            Some(ParentWindowContext::X11 { window_id: 42 })
+        );
     }
 }

@@ -38,6 +38,9 @@ impl HealthStatus {
 pub enum ControlRequest {
     Status,
     Stop,
+    InspectRequest {
+        id: String,
+    },
     BeginRequest {
         id: String,
         sender: String,
@@ -88,6 +91,7 @@ impl ControlRequest {
         match self {
             Self::Status => "status".to_string(),
             Self::Stop => "stop".to_string(),
+            Self::InspectRequest { id } => format!("inspect id={id}"),
             Self::BeginRequest {
                 id,
                 sender,
@@ -139,6 +143,11 @@ impl ControlRequest {
 
         let mut parts = trimmed.split_whitespace();
         match parts.next() {
+            Some("inspect") => {
+                let fields = parse_fields(parts)?;
+                let id = fields.get("id")?.clone();
+                Some(Self::InspectRequest { id })
+            }
             Some("begin") => {
                 let fields = parse_fields(parts)?;
                 let id = fields.get("id")?.clone();
@@ -192,8 +201,21 @@ impl StatusResponse {
 pub enum ControlResponse {
     Status(StatusResponse),
     AckStopping,
-    AckRequest { id: String, state: String },
-    Error { code: u32, reason: String },
+    AckRequest {
+        id: String,
+        state: String,
+    },
+    RequestSnapshot {
+        id: String,
+        state: String,
+        sender: String,
+        app_id: Option<String>,
+        parent_window: Option<String>,
+    },
+    Error {
+        code: u32,
+        reason: String,
+    },
 }
 
 impl ControlResponse {
@@ -209,6 +231,20 @@ impl ControlResponse {
             Self::AckStopping => "ack stopping\n".to_string(),
             Self::AckRequest { id, state } => {
                 format!("ack request id={} state={}\n", id, state)
+            }
+            Self::RequestSnapshot {
+                id,
+                state,
+                sender,
+                app_id,
+                parent_window,
+            } => {
+                let app_id = app_id.as_deref().unwrap_or("-");
+                let parent_window = parent_window.as_deref().unwrap_or("-");
+                format!(
+                    "snapshot id={} state={} sender={} app_id={} parent={}\n",
+                    id, state, sender, app_id, parent_window
+                )
             }
             Self::Error { code, reason } => format!("error code={} reason={}\n", code, reason),
         }
@@ -285,6 +321,43 @@ impl ControlResponse {
                 Some(other) => Err(ParseError::UnknownToken(other.to_string())),
                 None => Err(ParseError::MissingField("ack")),
             },
+            Some("snapshot") => {
+                let mut id = None;
+                let mut state = None;
+                let mut sender = None;
+                let mut app_id = None;
+                let mut parent_window = None;
+
+                for part in parts {
+                    let (key, value) = part
+                        .split_once('=')
+                        .ok_or(ParseError::InvalidField(part.to_string()))?;
+                    match key {
+                        "id" => id = Some(value.to_string()),
+                        "state" => state = Some(value.to_string()),
+                        "sender" => sender = Some(value.to_string()),
+                        "app_id" => {
+                            if value != "-" {
+                                app_id = Some(value.to_string());
+                            }
+                        }
+                        "parent" => {
+                            if value != "-" {
+                                parent_window = Some(value.to_string());
+                            }
+                        }
+                        _ => return Err(ParseError::InvalidField(part.to_string())),
+                    }
+                }
+
+                Ok(Self::RequestSnapshot {
+                    id: id.ok_or(ParseError::MissingField("id"))?,
+                    state: state.ok_or(ParseError::MissingField("state"))?,
+                    sender: sender.ok_or(ParseError::MissingField("sender"))?,
+                    app_id,
+                    parent_window,
+                })
+            }
             Some("error") => match parts.next() {
                 Some(first_field) => {
                     let mut code = None;
@@ -365,6 +438,9 @@ mod tests {
         for request in [
             ControlRequest::Status,
             ControlRequest::Stop,
+            ControlRequest::InspectRequest {
+                id: "req-1".to_string(),
+            },
             ControlRequest::BeginRequest {
                 id: "req-1".to_string(),
                 sender: ":1.2".to_string(),
@@ -403,6 +479,13 @@ mod tests {
             ControlResponse::AckRequest {
                 id: "req-1".to_string(),
                 state: "pending".to_string(),
+            },
+            ControlResponse::RequestSnapshot {
+                id: "req-1".to_string(),
+                state: "awaiting_user".to_string(),
+                sender: ":1.2".to_string(),
+                app_id: Some("org.test.App".to_string()),
+                parent_window: Some("x11:0x2a".to_string()),
             },
             ControlResponse::Error {
                 code: 2,

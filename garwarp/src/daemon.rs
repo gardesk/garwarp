@@ -123,6 +123,22 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
             state.running = false;
             ControlResponse::AckStopping
         }
+        Some(ControlRequest::InspectRequest { id }) => match state.requests.record(&id) {
+            Some(record) => ControlResponse::RequestSnapshot {
+                id: record.id,
+                state: record.state.as_str().to_string(),
+                sender: record.owner.sender,
+                app_id: record.owner.app_id,
+                parent_window: record.parent_window.map(|parent| parent.as_str()),
+            },
+            None => {
+                let mapping = map_portal_error(&PortalError::RequestNotFound);
+                ControlResponse::Error {
+                    code: mapping.code as u32,
+                    reason: mapping.reason.to_string(),
+                }
+            }
+        },
         Some(ControlRequest::BeginRequest {
             id,
             sender,
@@ -587,6 +603,84 @@ mod tests {
             }
         );
         assert_eq!(state.requests.state("req-1"), Some(RequestState::Cancelled));
+    }
+
+    #[test]
+    fn inspect_returns_request_snapshot() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"inspect id=req-1\n")
+            .expect("inspect request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        state
+            .requests
+            .begin_at(
+                "req-1",
+                RequestOwner::new(":1.2", Some("org.test.App".to_string())),
+                Some(ParentWindowContext::X11 { window_id: 42 }),
+                Instant::now(),
+            )
+            .expect("request should be created");
+        state
+            .requests
+            .transition(
+                "req-1",
+                &RequestOwner::new(":1.2", Some("org.test.App".to_string())),
+                RequestState::AwaitingUser,
+            )
+            .expect("request should transition");
+        handle_connection(server, &mut state).expect("inspect should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::RequestSnapshot {
+                id: "req-1".to_string(),
+                state: "awaiting_user".to_string(),
+                sender: ":1.2".to_string(),
+                app_id: Some("org.test.App".to_string()),
+                parent_window: Some("x11:0x2a".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn inspect_missing_request_maps_to_not_found() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"inspect id=req-missing\n")
+            .expect("inspect request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        handle_connection(server, &mut state).expect("inspect should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::Error {
+                code: 2,
+                reason: "request_not_found".to_string(),
+            }
+        );
     }
 
     #[test]
