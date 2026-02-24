@@ -1,0 +1,20 @@
+[workspace]
+members = [
+  "garwarp",
+  "garwarp-ipc",
+  "garwarpctl",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
