@@ -299,38 +299,43 @@ impl ControlResponse {
                         .ok_or(ParseError::InvalidField(part.to_string()))?;
                     match key {
                         "protocol" => {
-                            protocol_version = Some(
-                                value
-                                    .parse::<u16>()
-                                    .map_err(|_| ParseError::InvalidField(part.to_string()))?,
-                            );
+                            let parsed = value
+                                .parse::<u16>()
+                                .map_err(|_| ParseError::InvalidField(part.to_string()))?;
+                            if protocol_version.replace(parsed).is_some() {
+                                return Err(ParseError::InvalidField(part.to_string()));
+                            }
                         }
                         "health" => {
-                            health = HealthStatus::parse(value);
-                            if health.is_none() {
+                            let parsed = HealthStatus::parse(value)
+                                .ok_or(ParseError::InvalidField(part.to_string()))?;
+                            if health.replace(parsed).is_some() {
                                 return Err(ParseError::InvalidField(part.to_string()));
                             }
                         }
                         "in_flight" => {
-                            in_flight_requests = Some(
-                                value
-                                    .parse::<usize>()
-                                    .map_err(|_| ParseError::InvalidField(part.to_string()))?,
-                            );
+                            let parsed = value
+                                .parse::<usize>()
+                                .map_err(|_| ParseError::InvalidField(part.to_string()))?;
+                            if in_flight_requests.replace(parsed).is_some() {
+                                return Err(ParseError::InvalidField(part.to_string()));
+                            }
                         }
                         "total" => {
-                            total_requests = Some(
-                                value
-                                    .parse::<usize>()
-                                    .map_err(|_| ParseError::InvalidField(part.to_string()))?,
-                            );
+                            let parsed = value
+                                .parse::<usize>()
+                                .map_err(|_| ParseError::InvalidField(part.to_string()))?;
+                            if total_requests.replace(parsed).is_some() {
+                                return Err(ParseError::InvalidField(part.to_string()));
+                            }
                         }
                         "terminal" => {
-                            terminal_requests = Some(
-                                value
-                                    .parse::<usize>()
-                                    .map_err(|_| ParseError::InvalidField(part.to_string()))?,
-                            );
+                            let parsed = value
+                                .parse::<usize>()
+                                .map_err(|_| ParseError::InvalidField(part.to_string()))?;
+                            if terminal_requests.replace(parsed).is_some() {
+                                return Err(ParseError::InvalidField(part.to_string()));
+                            }
                         }
                         _ => return Err(ParseError::InvalidField(part.to_string())),
                     }
@@ -358,8 +363,16 @@ impl ControlResponse {
                             .split_once('=')
                             .ok_or(ParseError::InvalidField(part.to_string()))?;
                         match key {
-                            "id" => id = Some(value.to_string()),
-                            "state" => state = Some(value.to_string()),
+                            "id" => {
+                                if id.replace(value.to_string()).is_some() {
+                                    return Err(ParseError::InvalidField(part.to_string()));
+                                }
+                            }
+                            "state" => {
+                                if state.replace(value.to_string()).is_some() {
+                                    return Err(ParseError::InvalidField(part.to_string()));
+                                }
+                            }
                             _ => return Err(ParseError::InvalidField(part.to_string())),
                         }
                     }
@@ -379,15 +392,18 @@ impl ControlResponse {
                         .ok_or(ParseError::InvalidField(part.to_string()))?;
                     match key {
                         "ids" => {
-                            if value == "-" {
-                                ids = Some(Vec::new());
+                            let parsed = if value == "-" {
+                                Vec::new()
                             } else {
                                 let parsed =
                                     value.split(',').map(str::to_string).collect::<Vec<_>>();
                                 if parsed.iter().any(|id| id.is_empty()) {
                                     return Err(ParseError::InvalidField(part.to_string()));
                                 }
-                                ids = Some(parsed);
+                                parsed
+                            };
+                            if ids.replace(parsed).is_some() {
+                                return Err(ParseError::InvalidField(part.to_string()));
                             }
                         }
                         _ => return Err(ParseError::InvalidField(part.to_string())),
@@ -403,24 +419,50 @@ impl ControlResponse {
                 let mut sender = None;
                 let mut app_id = None;
                 let mut parent_window = None;
+                let mut saw_app_id = false;
+                let mut saw_parent_window = false;
 
                 for part in parts {
                     let (key, value) = part
                         .split_once('=')
                         .ok_or(ParseError::InvalidField(part.to_string()))?;
                     match key {
-                        "id" => id = Some(value.to_string()),
-                        "state" => state = Some(value.to_string()),
-                        "sender" => sender = Some(value.to_string()),
-                        "app_id" => {
-                            if value != "-" {
-                                app_id = Some(value.to_string());
+                        "id" => {
+                            if id.replace(value.to_string()).is_some() {
+                                return Err(ParseError::InvalidField(part.to_string()));
                             }
                         }
-                        "parent" => {
-                            if value != "-" {
-                                parent_window = Some(value.to_string());
+                        "state" => {
+                            if state.replace(value.to_string()).is_some() {
+                                return Err(ParseError::InvalidField(part.to_string()));
                             }
+                        }
+                        "sender" => {
+                            if sender.replace(value.to_string()).is_some() {
+                                return Err(ParseError::InvalidField(part.to_string()));
+                            }
+                        }
+                        "app_id" => {
+                            if saw_app_id {
+                                return Err(ParseError::InvalidField(part.to_string()));
+                            }
+                            saw_app_id = true;
+                            app_id = if value == "-" {
+                                None
+                            } else {
+                                Some(value.to_string())
+                            };
+                        }
+                        "parent" => {
+                            if saw_parent_window {
+                                return Err(ParseError::InvalidField(part.to_string()));
+                            }
+                            saw_parent_window = true;
+                            parent_window = if value == "-" {
+                                None
+                            } else {
+                                Some(value.to_string())
+                            };
                         }
                         _ => return Err(ParseError::InvalidField(part.to_string())),
                     }
@@ -447,12 +489,18 @@ impl ControlResponse {
                             .ok_or(ParseError::InvalidField(field.to_string()))?;
                         match key {
                             "code" => {
-                                code =
-                                    Some(value.parse::<u32>().map_err(|_| {
-                                        ParseError::InvalidField(field.to_string())
-                                    })?);
+                                let parsed = value
+                                    .parse::<u32>()
+                                    .map_err(|_| ParseError::InvalidField(field.to_string()))?;
+                                if code.replace(parsed).is_some() {
+                                    return Err(ParseError::InvalidField(field.to_string()));
+                                }
                             }
-                            "reason" => reason = Some(value.to_string()),
+                            "reason" => {
+                                if reason.replace(value.to_string()).is_some() {
+                                    return Err(ParseError::InvalidField(field.to_string()));
+                                }
+                            }
                             _ => return Err(ParseError::InvalidField(field.to_string())),
                         }
                     }
@@ -618,5 +666,26 @@ mod tests {
     fn request_parse_rejects_unknown_fields() {
         let parsed = ControlRequest::parse_line("inspect id=req-1 bogus=1");
         assert_eq!(parsed, None);
+    }
+
+    #[test]
+    fn response_parse_rejects_duplicate_fields() {
+        assert!(
+            ControlResponse::parse_line(
+                "status protocol=1 protocol=2 health=healthy in_flight=0 total=0 terminal=0",
+            )
+            .is_err()
+        );
+        assert!(
+            ControlResponse::parse_line("ack request id=req-1 id=req-2 state=pending").is_err()
+        );
+        assert!(ControlResponse::parse_line("list ids=req-1 ids=req-2").is_err());
+        assert!(
+            ControlResponse::parse_line(
+                "snapshot id=req-1 state=pending sender=:1.2 app_id=- app_id=org.test.App parent=-",
+            )
+            .is_err()
+        );
+        assert!(ControlResponse::parse_line("error code=2 reason=bad reason=worse").is_err());
     }
 }
