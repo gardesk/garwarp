@@ -16,7 +16,7 @@ use crate::logging;
 use crate::request::{RequestOwner, RequestRegistry, RequestState};
 use crate::request_store;
 use crate::runtime::RuntimePaths;
-use crate::validate::validate_request_identity;
+use crate::validate::{validate_request_id, validate_request_identity};
 use crate::window::parse_optional_parent_window;
 
 pub fn run() -> io::Result<()> {
@@ -123,22 +123,36 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
             state.running = false;
             ControlResponse::AckStopping
         }
-        Some(ControlRequest::InspectRequest { id }) => match state.requests.record(&id) {
-            Some(record) => ControlResponse::RequestSnapshot {
-                id: record.id,
-                state: record.state.as_str().to_string(),
-                sender: record.owner.sender,
-                app_id: record.owner.app_id,
-                parent_window: record.parent_window.map(|parent| parent.as_str()),
-            },
-            None => {
-                let mapping = map_portal_error(&PortalError::RequestNotFound);
-                ControlResponse::Error {
-                    code: mapping.code as u32,
-                    reason: mapping.reason.to_string(),
+        Some(ControlRequest::InspectRequest { id }) => {
+            let validation = validate_request_id(&id);
+            if let Err(error) = validation {
+                let mapping = map_portal_error(&error);
+                return write_response(
+                    reader.into_inner(),
+                    ControlResponse::Error {
+                        code: mapping.code as u32,
+                        reason: mapping.reason.to_string(),
+                    },
+                );
+            }
+
+            match state.requests.record(&id) {
+                Some(record) => ControlResponse::RequestSnapshot {
+                    id: record.id,
+                    state: record.state.as_str().to_string(),
+                    sender: record.owner.sender,
+                    app_id: record.owner.app_id,
+                    parent_window: record.parent_window.map(|parent| parent.as_str()),
+                },
+                None => {
+                    let mapping = map_portal_error(&PortalError::RequestNotFound);
+                    ControlResponse::Error {
+                        code: mapping.code as u32,
+                        reason: mapping.reason.to_string(),
+                    }
                 }
             }
-        },
+        }
         Some(ControlRequest::BeginRequest {
             id,
             sender,
@@ -679,6 +693,35 @@ mod tests {
             ControlResponse::Error {
                 code: 2,
                 reason: "request_not_found".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn inspect_invalid_request_id_maps_to_invalid_request() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"inspect id=req/invalid\n")
+            .expect("inspect request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        handle_connection(server, &mut state).expect("inspect should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::Error {
+                code: 2,
+                reason: "invalid_request".to_string(),
             }
         );
     }

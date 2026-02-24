@@ -9,15 +9,20 @@ pub fn validate_request_identity(
     sender: &str,
     app_id: Option<&str>,
 ) -> Result<(), PortalError> {
-    if !is_valid_request_id(request_id) {
-        return Err(PortalError::InvalidRequestPayload);
-    }
+    validate_request_id(request_id)?;
     if !is_valid_sender(sender) {
         return Err(PortalError::InvalidRequestPayload);
     }
     if let Some(app_id) = app_id
         && !is_valid_app_id(app_id)
     {
+        return Err(PortalError::InvalidRequestPayload);
+    }
+    Ok(())
+}
+
+pub fn validate_request_id(request_id: &str) -> Result<(), PortalError> {
+    if !is_valid_request_id(request_id) {
         return Err(PortalError::InvalidRequestPayload);
     }
     Ok(())
@@ -50,7 +55,7 @@ fn is_valid_app_id(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_request_identity;
+    use super::{validate_request_id, validate_request_identity};
 
     #[test]
     fn accepts_valid_identity() {
@@ -61,6 +66,12 @@ mod tests {
     #[test]
     fn rejects_invalid_request_id() {
         let result = validate_request_identity("req/1", ":1.2", Some("org.test.App"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_request_id_rejects_empty() {
+        let result = validate_request_id("");
         assert!(result.is_err());
     }
 
