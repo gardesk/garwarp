@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.desktop.garwarp
+Exec=/usr/bin/garwarp daemon
+SystemdService=garwarp.service
