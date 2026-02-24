@@ -37,13 +37,22 @@ impl RuntimePaths {
     }
 
     pub fn ensure_runtime_dir(&self) -> io::Result<()> {
-        fs::create_dir_all(&self.root)
+        fs::create_dir_all(&self.root)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::RuntimePaths;
 
@@ -63,5 +72,29 @@ mod tests {
             paths.request_store,
             PathBuf::from("/tmp/runtime/garwarp/requests.state")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_runtime_dir_sets_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let base = std::env::temp_dir().join(format!("garwarp-runtime-test-{nanos}"));
+        let paths = RuntimePaths::from_base(base.clone());
+        paths
+            .ensure_runtime_dir()
+            .expect("runtime dir should be created");
+
+        let mode = fs::metadata(&paths.root)
+            .expect("runtime metadata should be readable")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+
+        fs::remove_dir_all(base).expect("temp runtime dir should be removed");
     }
 }
