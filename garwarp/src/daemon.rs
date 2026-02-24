@@ -55,7 +55,8 @@ pub fn run() -> io::Result<()> {
         requests,
         running: true,
     };
-    persist_registry_state(&paths.request_store, &state.requests);
+    let persisted = persist_registry_state(&paths.request_store, &state.requests);
+    update_health_after_persist(&mut state, persisted);
 
     while state.running {
         let expired = state.requests.expire_stale(Instant::now());
@@ -63,7 +64,8 @@ pub fn run() -> io::Result<()> {
             logging::warn(&format!("request_expired id={id}"));
         }
         if !expired.is_empty() {
-            persist_registry_state(&paths.request_store, &state.requests);
+            let persisted = persist_registry_state(&paths.request_store, &state.requests);
+            update_health_after_persist(&mut state, persisted);
         }
 
         let pruned = state
@@ -73,7 +75,8 @@ pub fn run() -> io::Result<()> {
             logging::info(&format!("request_pruned id={id}"));
         }
         if !pruned.is_empty() {
-            persist_registry_state(&paths.request_store, &state.requests);
+            let persisted = persist_registry_state(&paths.request_store, &state.requests);
+            update_health_after_persist(&mut state, persisted);
         }
 
         match listener.accept() {
@@ -81,7 +84,8 @@ pub fn run() -> io::Result<()> {
                 if let Err(error) = handle_connection(stream, &mut state) {
                     logging::warn(&format!("request_error={error}"));
                 } else {
-                    persist_registry_state(&paths.request_store, &state.requests);
+                    let persisted = persist_registry_state(&paths.request_store, &state.requests);
+                    update_health_after_persist(&mut state, persisted);
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -512,9 +516,25 @@ fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
     }
 }
 
-fn persist_registry_state(path: &std::path::Path, registry: &RequestRegistry) {
+fn persist_registry_state(path: &std::path::Path, registry: &RequestRegistry) -> bool {
     if let Err(error) = request_store::persist_registry(path, registry) {
         logging::warn(&format!("request_store_write_failed error={error}"));
+        return false;
+    }
+    true
+}
+
+fn update_health_after_persist(state: &mut DaemonState, persisted: bool) {
+    match (state.health, persisted) {
+        (HealthStatus::Healthy, false) => {
+            state.health = HealthStatus::Degraded;
+            logging::warn("health_degraded reason=request_store_write_failed");
+        }
+        (HealthStatus::Degraded, true) => {
+            state.health = HealthStatus::Healthy;
+            logging::info("health_recovered source=request_store_write");
+        }
+        _ => {}
     }
 }
 
@@ -523,7 +543,7 @@ mod tests {
     use super::{
         DaemonState, MAX_CONTROL_LINE_BYTES, canonical_sender_for_uid, handle_connection,
         is_trusted_control_peer, load_registry_with_fallback, load_registry_with_recovery,
-        peer_uid, set_control_socket_permissions,
+        peer_uid, set_control_socket_permissions, update_health_after_persist,
     };
     use garwarp_ipc::{ControlResponse, HealthStatus};
     use std::fs;
@@ -570,6 +590,28 @@ mod tests {
             & 0o777;
         assert_eq!(mode, 0o600);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn health_degrades_when_persist_fails() {
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        update_health_after_persist(&mut state, false);
+        assert_eq!(state.health, HealthStatus::Degraded);
+    }
+
+    #[test]
+    fn health_recovers_when_persist_succeeds() {
+        let mut state = DaemonState {
+            health: HealthStatus::Degraded,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        update_health_after_persist(&mut state, true);
+        assert_eq!(state.health, HealthStatus::Healthy);
     }
 
     #[test]
