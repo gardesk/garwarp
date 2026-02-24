@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,6 +18,8 @@ use crate::request_store;
 use crate::runtime::RuntimePaths;
 use crate::validate::{validate_request_id, validate_request_identity};
 use crate::window::parse_optional_parent_window;
+
+const MAX_CONTROL_LINE_BYTES: usize = 4096;
 
 pub fn run() -> io::Result<()> {
     let config = Config::from_env();
@@ -110,7 +112,21 @@ struct DaemonState {
 fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<()> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    let bytes_read = {
+        let mut limited = reader.by_ref().take((MAX_CONTROL_LINE_BYTES + 1) as u64);
+        limited.read_line(&mut line)?
+    };
+
+    if bytes_read > MAX_CONTROL_LINE_BYTES {
+        let mapping = map_portal_error(&PortalError::InvalidRequestPayload);
+        return write_response(
+            reader.into_inner(),
+            ControlResponse::Error {
+                code: mapping.code as u32,
+                reason: mapping.reason.to_string(),
+            },
+        );
+    }
 
     let response = match ControlRequest::parse_line(&line) {
         Some(ControlRequest::Status) => ControlResponse::Status(StatusResponse {
@@ -329,7 +345,9 @@ fn persist_registry_state(path: &std::path::Path, registry: &RequestRegistry) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DaemonState, handle_connection, load_registry_with_recovery};
+    use super::{
+        DaemonState, MAX_CONTROL_LINE_BYTES, handle_connection, load_registry_with_recovery,
+    };
     use garwarp_ipc::{ControlResponse, HealthStatus};
     use std::fs;
     use std::io::{BufRead, BufReader, Write};
@@ -476,6 +494,36 @@ mod tests {
         client
             .write_all(b"unknown\n")
             .expect("invalid request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        handle_connection(server, &mut state).expect("request should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::Error {
+                code: 2,
+                reason: "invalid_request".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn oversized_request_maps_to_invalid_request() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        let oversized = format!("{}\n", "x".repeat(MAX_CONTROL_LINE_BYTES + 1));
+        client
+            .write_all(oversized.as_bytes())
+            .expect("oversized request should be written");
 
         let mut state = DaemonState {
             health: HealthStatus::Healthy,
