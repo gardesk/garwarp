@@ -303,6 +303,7 @@ name = "garwarp"
 version = "0.1.0"
 dependencies = [
  "garwarp-ipc",
+ "libc",
  "zbus",
 ]
 

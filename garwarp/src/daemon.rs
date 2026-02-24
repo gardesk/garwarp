@@ -187,10 +187,25 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
         }
         Some(ControlRequest::BeginRequest {
             id,
-            sender,
+            sender: _sender,
             app_id,
             parent_window,
         }) => {
+            let sender = match trusted_sender(reader.get_ref()) {
+                Ok(sender) => sender,
+                Err(error) => {
+                    let mapping = map_portal_error(&PortalError::InternalFailure);
+                    logging::warn(&format!("peer_identity_error={error}"));
+                    return write_response(
+                        reader.into_inner(),
+                        ControlResponse::Error {
+                            code: mapping.code as u32,
+                            reason: mapping.reason.to_string(),
+                        },
+                    );
+                }
+            };
+
             let validation = validate_request_identity(&id, &sender, app_id.as_deref());
             if let Err(error) = validation {
                 let mapping = map_portal_error(&error);
@@ -266,10 +281,25 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
         }
         Some(ControlRequest::TransitionRequest {
             id,
-            sender,
+            sender: _sender,
             app_id,
             target,
         }) => {
+            let sender = match trusted_sender(reader.get_ref()) {
+                Ok(sender) => sender,
+                Err(error) => {
+                    let mapping = map_portal_error(&PortalError::InternalFailure);
+                    logging::warn(&format!("peer_identity_error={error}"));
+                    return write_response(
+                        reader.into_inner(),
+                        ControlResponse::Error {
+                            code: mapping.code as u32,
+                            reason: mapping.reason.to_string(),
+                        },
+                    );
+                }
+            };
+
             let validation = validate_request_identity(&id, &sender, app_id.as_deref());
             if let Err(error) = validation {
                 let mapping = map_portal_error(&error);
@@ -384,6 +414,51 @@ fn quarantine_request_store(path: &Path) -> io::Result<Option<std::path::PathBuf
     Ok(Some(quarantined))
 }
 
+fn trusted_sender(stream: &UnixStream) -> io::Result<String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::mem;
+        use std::os::fd::AsRawFd;
+
+        let fd = stream.as_raw_fd();
+        let mut cred = libc::ucred {
+            pid: 0,
+            uid: 0,
+            gid: 0,
+        };
+        let mut len = mem::size_of::<libc::ucred>() as libc::socklen_t;
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut cred as *mut libc::ucred).cast::<libc::c_void>(),
+                &mut len,
+            )
+        };
+        if rc == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        if len as usize != mem::size_of::<libc::ucred>() {
+            return Err(io::Error::other("invalid peer credential size"));
+        }
+        return Ok(canonical_sender_for_uid(cred.uid));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = stream;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "peer credentials are unsupported on this platform",
+        ))
+    }
+}
+
+fn canonical_sender_for_uid(uid: u32) -> String {
+    format!(":uid.{uid}")
+}
+
 fn persist_registry_state(path: &std::path::Path, registry: &RequestRegistry) {
     if let Err(error) = request_store::persist_registry(path, registry) {
         logging::warn(&format!("request_store_write_failed error={error}"));
@@ -393,8 +468,8 @@ fn persist_registry_state(path: &std::path::Path, registry: &RequestRegistry) {
 #[cfg(test)]
 mod tests {
     use super::{
-        DaemonState, MAX_CONTROL_LINE_BYTES, handle_connection, load_registry_with_fallback,
-        load_registry_with_recovery,
+        DaemonState, MAX_CONTROL_LINE_BYTES, canonical_sender_for_uid, handle_connection,
+        load_registry_with_fallback, load_registry_with_recovery,
     };
     use garwarp_ipc::{ControlResponse, HealthStatus};
     use std::fs;
@@ -414,6 +489,10 @@ mod tests {
         std::env::temp_dir().join(format!("garwarp-daemon-recovery-{nanos}.state"))
     }
 
+    fn local_sender() -> String {
+        canonical_sender_for_uid(unsafe { libc::geteuid() })
+    }
+
     #[test]
     fn status_request_returns_status_response() {
         let (mut client, server) = UnixStream::pair().expect("pair should be created");
@@ -430,7 +509,7 @@ mod tests {
             .requests
             .begin_at(
                 "req-1",
-                RequestOwner::new(":1.2", None),
+                RequestOwner::new(local_sender(), None),
                 None,
                 Instant::now(),
             )
@@ -439,7 +518,7 @@ mod tests {
             .requests
             .transition(
                 "req-1",
-                &RequestOwner::new(":1.2", None),
+                &RequestOwner::new(local_sender(), None),
                 RequestState::AwaitingUser,
             )
             .expect("request should transition");
@@ -704,7 +783,7 @@ mod tests {
             .requests
             .begin_at(
                 "req-1",
-                RequestOwner::new(":1.2", None),
+                RequestOwner::new(local_sender(), None),
                 Some(ParentWindowContext::X11 { window_id: 42 }),
                 Instant::now(),
             )
@@ -713,7 +792,7 @@ mod tests {
             .requests
             .transition(
                 "req-1",
-                &RequestOwner::new(":1.2", None),
+                &RequestOwner::new(local_sender(), None),
                 RequestState::AwaitingUser,
             )
             .expect("request should transition");
@@ -751,7 +830,7 @@ mod tests {
             .requests
             .begin_at(
                 "req-1",
-                RequestOwner::new(":1.2", None),
+                RequestOwner::new(":uid.4242", None),
                 Some(ParentWindowContext::X11 { window_id: 42 }),
                 Instant::now(),
             )
@@ -832,18 +911,18 @@ mod tests {
     }
 
     #[test]
-    fn invalid_sender_maps_to_invalid_request() {
+    fn payload_sender_is_ignored_for_begin() {
         let (mut client, server) = UnixStream::pair().expect("pair should be created");
         client
-            .write_all(b"transition id=req-1 sender=org.test.App state=cancelled\n")
-            .expect("transition request should be written");
+            .write_all(b"begin id=req-1 sender=org.test.App parent=x11:0x2a\n")
+            .expect("begin request should be written");
 
         let mut state = DaemonState {
             health: HealthStatus::Healthy,
             requests: RequestRegistry::new(Duration::from_secs(5)),
             running: true,
         };
-        handle_connection(server, &mut state).expect("transition should be handled");
+        handle_connection(server, &mut state).expect("begin should be handled");
 
         let mut response_line = String::new();
         let mut reader = BufReader::new(client);
@@ -853,10 +932,14 @@ mod tests {
         let response = ControlResponse::parse_line(&response_line).expect("response should parse");
         assert_eq!(
             response,
-            ControlResponse::Error {
-                code: 2,
-                reason: "invalid_request".to_string(),
+            ControlResponse::AckRequest {
+                id: "req-1".to_string(),
+                state: "pending".to_string(),
             }
+        );
+        assert_eq!(
+            state.requests.owner("req-1").map(|owner| owner.sender),
+            Some(local_sender())
         );
     }
 
@@ -876,7 +959,7 @@ mod tests {
             .requests
             .begin_at(
                 "req-1",
-                RequestOwner::new(":1.2", None),
+                RequestOwner::new(":uid.4242", None),
                 Some(ParentWindowContext::X11 { window_id: 42 }),
                 Instant::now(),
             )
@@ -915,7 +998,7 @@ mod tests {
             .requests
             .begin_at(
                 "req-1",
-                RequestOwner::new(":1.2", None),
+                RequestOwner::new(local_sender(), None),
                 None,
                 Instant::now(),
             )
@@ -924,7 +1007,7 @@ mod tests {
             .requests
             .transition(
                 "req-1",
-                &RequestOwner::new(":1.2", None),
+                &RequestOwner::new(local_sender(), None),
                 RequestState::Cancelled,
             )
             .expect("first cancel should transition");
@@ -962,7 +1045,7 @@ mod tests {
             .requests
             .begin_at(
                 "req-1",
-                RequestOwner::new(":1.2", None),
+                RequestOwner::new(local_sender(), None),
                 None,
                 Instant::now(),
             )
@@ -971,7 +1054,7 @@ mod tests {
             .requests
             .transition(
                 "req-1",
-                &RequestOwner::new(":1.2", None),
+                &RequestOwner::new(local_sender(), None),
                 RequestState::AwaitingUser,
             )
             .expect("first awaiting_user should transition");
@@ -1012,7 +1095,7 @@ mod tests {
             .requests
             .begin_at(
                 "req-1",
-                RequestOwner::new(":1.2", Some("org.test.App".to_string())),
+                RequestOwner::new(local_sender(), Some("org.test.App".to_string())),
                 Some(ParentWindowContext::X11 { window_id: 42 }),
                 Instant::now(),
             )
@@ -1021,7 +1104,7 @@ mod tests {
             .requests
             .transition(
                 "req-1",
-                &RequestOwner::new(":1.2", Some("org.test.App".to_string())),
+                &RequestOwner::new(local_sender(), Some("org.test.App".to_string())),
                 RequestState::AwaitingUser,
             )
             .expect("request should transition");
@@ -1038,7 +1121,7 @@ mod tests {
             ControlResponse::RequestSnapshot {
                 id: "req-1".to_string(),
                 state: "awaiting_user".to_string(),
-                sender: ":1.2".to_string(),
+                sender: local_sender(),
                 app_id: Some("org.test.App".to_string()),
                 parent_window: Some("x11:0x2a".to_string()),
             }

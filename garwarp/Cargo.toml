@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 garwarp-ipc = { path = "../garwarp-ipc" }
 zbus = "5.14.0"
+libc = "0.2"
