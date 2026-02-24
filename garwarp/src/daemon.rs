@@ -733,6 +733,56 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_awaiting_user_returns_ack() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"transition id=req-1 sender=:1.2 state=awaiting_user\n")
+            .expect("transition request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        state
+            .requests
+            .begin_at(
+                "req-1",
+                RequestOwner::new(":1.2", None),
+                None,
+                Instant::now(),
+            )
+            .expect("request should be created");
+        state
+            .requests
+            .transition(
+                "req-1",
+                &RequestOwner::new(":1.2", None),
+                RequestState::AwaitingUser,
+            )
+            .expect("first awaiting_user should transition");
+        handle_connection(server, &mut state).expect("transition should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::AckRequest {
+                id: "req-1".to_string(),
+                state: "awaiting_user".to_string(),
+            }
+        );
+        assert_eq!(
+            state.requests.state("req-1"),
+            Some(RequestState::AwaitingUser)
+        );
+    }
+
+    #[test]
     fn inspect_returns_request_snapshot() {
         let (mut client, server) = UnixStream::pair().expect("pair should be created");
         client

@@ -191,7 +191,7 @@ impl RequestRegistry {
             return Err(RequestError::OwnerMismatch(id.to_string()));
         }
 
-        if entry.state == target && target.is_terminal() {
+        if entry.state == target {
             entry.last_updated_at = now;
             return Ok(());
         }
@@ -582,6 +582,28 @@ mod tests {
             )
             .expect("duplicate cancel should be idempotent");
         assert_eq!(registry.state("req-1"), Some(RequestState::Cancelled));
+    }
+
+    #[test]
+    fn duplicate_awaiting_user_is_idempotent() {
+        let now = Instant::now();
+        let request_owner = owner(":1.2");
+        let mut registry = RequestRegistry::new(Duration::from_secs(5));
+        registry
+            .begin_at("req-1", request_owner.clone(), None, now)
+            .expect("request should be created");
+        registry
+            .transition_at("req-1", &request_owner, RequestState::AwaitingUser, now)
+            .expect("first awaiting_user should succeed");
+        registry
+            .transition_at(
+                "req-1",
+                &request_owner,
+                RequestState::AwaitingUser,
+                now + Duration::from_millis(50),
+            )
+            .expect("duplicate awaiting_user should be idempotent");
+        assert_eq!(registry.state("req-1"), Some(RequestState::AwaitingUser));
     }
 
     #[test]
