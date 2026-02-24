@@ -13,7 +13,7 @@ use crate::dbus::{self, SessionNameGuard};
 use crate::error::{PortalError, map_portal_error, map_request_error};
 use crate::lock::SingleInstanceGuard;
 use crate::logging;
-use crate::request::{RequestOwner, RequestRegistry, RequestState};
+use crate::request::{RequestError, RequestOwner, RequestRegistry, RequestState};
 use crate::request_store;
 use crate::runtime::RuntimePaths;
 use crate::validate::{validate_request_id, validate_request_identity};
@@ -189,12 +189,40 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
 
             match state
                 .requests
-                .begin(id.clone(), owner, parsed_parent_window)
+                .begin(id.clone(), owner.clone(), parsed_parent_window)
             {
                 Ok(()) => ControlResponse::AckRequest {
                     id,
                     state: "pending".to_string(),
                 },
+                Err(RequestError::AlreadyExists(_)) => {
+                    let existing = state.requests.record(&id);
+                    match existing {
+                        Some(record)
+                            if record.owner == owner
+                                && record.parent_window == parsed_parent_window =>
+                        {
+                            ControlResponse::AckRequest {
+                                id,
+                                state: record.state.as_str().to_string(),
+                            }
+                        }
+                        Some(record) if record.owner != owner => {
+                            let mapping = map_portal_error(&PortalError::OwnershipMismatch);
+                            ControlResponse::Error {
+                                code: mapping.code as u32,
+                                reason: mapping.reason.to_string(),
+                            }
+                        }
+                        _ => {
+                            let mapping = map_portal_error(&PortalError::RequestAlreadyExists);
+                            ControlResponse::Error {
+                                code: mapping.code as u32,
+                                reason: mapping.reason.to_string(),
+                            }
+                        }
+                    }
+                }
                 Err(error) => {
                     let mapping = map_request_error(&error);
                     ControlResponse::Error {
@@ -444,6 +472,91 @@ mod tests {
             Some(Some(ParentWindowContext::X11 { window_id: 42 }))
         );
         assert_eq!(state.requests.in_flight_count(), 1);
+    }
+
+    #[test]
+    fn duplicate_begin_with_same_owner_is_idempotent() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"begin id=req-1 sender=:1.2 parent=x11:0x2a\n")
+            .expect("begin request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        state
+            .requests
+            .begin_at(
+                "req-1",
+                RequestOwner::new(":1.2", None),
+                Some(ParentWindowContext::X11 { window_id: 42 }),
+                Instant::now(),
+            )
+            .expect("request should be created");
+        state
+            .requests
+            .transition(
+                "req-1",
+                &RequestOwner::new(":1.2", None),
+                RequestState::AwaitingUser,
+            )
+            .expect("request should transition");
+
+        handle_connection(server, &mut state).expect("begin should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::AckRequest {
+                id: "req-1".to_string(),
+                state: "awaiting_user".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_begin_with_different_owner_maps_to_ownership_mismatch() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"begin id=req-1 sender=:1.7 parent=x11:0x2a\n")
+            .expect("begin request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        state
+            .requests
+            .begin_at(
+                "req-1",
+                RequestOwner::new(":1.2", None),
+                Some(ParentWindowContext::X11 { window_id: 42 }),
+                Instant::now(),
+            )
+            .expect("request should be created");
+        handle_connection(server, &mut state).expect("begin should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::Error {
+                code: 2,
+                reason: "ownership_mismatch".to_string(),
+            }
+        );
     }
 
     #[test]
