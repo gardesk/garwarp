@@ -133,7 +133,12 @@ mod tests {
         };
         state
             .requests
-            .begin_at("req-1", RequestOwner::new(":1.2", None), Instant::now())
+            .begin_at(
+                "req-1",
+                RequestOwner::new(":1.2", None),
+                None,
+                Instant::now(),
+            )
             .expect("request should be created");
         state
             .requests

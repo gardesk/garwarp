@@ -5,6 +5,7 @@ mod lock;
 mod logging;
 mod request;
 mod runtime;
+mod window;
 
 use std::env;
 

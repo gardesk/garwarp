@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
+use crate::window::ParentWindowContext;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestOwner {
     pub sender: String,
@@ -42,6 +44,7 @@ impl RequestState {
 pub struct RequestEntry {
     pub id: String,
     pub owner: RequestOwner,
+    pub parent_window: Option<ParentWindowContext>,
     pub state: RequestState,
     started_at: Instant,
     last_updated_at: Instant,
@@ -49,10 +52,16 @@ pub struct RequestEntry {
 
 impl RequestEntry {
     #[must_use]
-    pub fn new(id: impl Into<String>, owner: RequestOwner, now: Instant) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        owner: RequestOwner,
+        parent_window: Option<ParentWindowContext>,
+        now: Instant,
+    ) -> Self {
         Self {
             id: id.into(),
             owner,
+            parent_window,
             state: RequestState::Pending,
             started_at: now,
             last_updated_at: now,
@@ -79,14 +88,16 @@ impl RequestRegistry {
         &mut self,
         id: impl Into<String>,
         owner: RequestOwner,
+        parent_window: Option<ParentWindowContext>,
     ) -> Result<(), RequestError> {
-        self.begin_at(id, owner, Instant::now())
+        self.begin_at(id, owner, parent_window, Instant::now())
     }
 
     pub fn begin_at(
         &mut self,
         id: impl Into<String>,
         owner: RequestOwner,
+        parent_window: Option<ParentWindowContext>,
         now: Instant,
     ) -> Result<(), RequestError> {
         let id = id.into();
@@ -94,7 +105,7 @@ impl RequestRegistry {
             return Err(RequestError::AlreadyExists(id));
         }
         self.entries
-            .insert(id.clone(), RequestEntry::new(id, owner, now));
+            .insert(id.clone(), RequestEntry::new(id, owner, parent_window, now));
         Ok(())
     }
 
@@ -181,6 +192,11 @@ impl RequestRegistry {
     pub fn state(&self, id: &str) -> Option<RequestState> {
         self.entries.get(id).map(|entry| entry.state)
     }
+
+    #[must_use]
+    pub fn parent_window(&self, id: &str) -> Option<Option<ParentWindowContext>> {
+        self.entries.get(id).map(|entry| entry.parent_window)
+    }
 }
 
 fn is_valid_transition(from: RequestState, to: RequestState) -> bool {
@@ -230,6 +246,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{RequestOwner, RequestRegistry, RequestState};
+    use crate::window::ParentWindowContext;
 
     fn owner(sender: &str) -> RequestOwner {
         RequestOwner::new(sender, Some("org.test.App".to_string()))
@@ -240,7 +257,7 @@ mod tests {
         let now = Instant::now();
         let mut registry = RequestRegistry::new(Duration::from_secs(5));
         registry
-            .begin_at("req-1", owner(":1.2"), now)
+            .begin_at("req-1", owner(":1.2"), None, now)
             .expect("request should be created");
         registry
             .transition_at("req-1", &owner(":1.2"), RequestState::AwaitingUser, now)
@@ -263,7 +280,7 @@ mod tests {
         let now = Instant::now();
         let mut registry = RequestRegistry::new(Duration::from_millis(100));
         registry
-            .begin_at("req-1", owner(":1.2"), now)
+            .begin_at("req-1", owner(":1.2"), None, now)
             .expect("request should be created");
         registry
             .transition_at("req-1", &owner(":1.2"), RequestState::AwaitingUser, now)
@@ -279,10 +296,10 @@ mod tests {
         let now = Instant::now();
         let mut registry = RequestRegistry::new(Duration::from_secs(10));
         registry
-            .begin_at("req-pending", owner(":1.2"), now)
+            .begin_at("req-pending", owner(":1.2"), None, now)
             .expect("request should be created");
         registry
-            .begin_at("req-awaiting", owner(":1.3"), now)
+            .begin_at("req-awaiting", owner(":1.3"), None, now)
             .expect("request should be created");
         registry
             .transition_at(
@@ -315,7 +332,7 @@ mod tests {
         let now = Instant::now();
         let mut registry = RequestRegistry::new(Duration::from_secs(5));
         registry
-            .begin_at("req-1", owner(":1.2"), now)
+            .begin_at("req-1", owner(":1.2"), None, now)
             .expect("request should be created");
         let result = registry.transition_at(
             "req-1",
@@ -331,7 +348,7 @@ mod tests {
     fn begin_creates_pending_request() {
         let mut registry = RequestRegistry::new(Duration::from_secs(5));
         registry
-            .begin("req-begin", owner(":1.4"))
+            .begin("req-begin", owner(":1.4"), None)
             .expect("request should be created");
         assert_eq!(registry.state("req-begin"), Some(RequestState::Pending));
     }
@@ -342,7 +359,7 @@ mod tests {
         let mut registry = RequestRegistry::new(Duration::from_secs(5));
         let request_owner = owner(":1.2");
         registry
-            .begin_at("req-1", request_owner.clone(), now)
+            .begin_at("req-1", request_owner.clone(), None, now)
             .expect("request should be created");
         registry
             .transition_at("req-1", &request_owner, RequestState::AwaitingUser, now)
@@ -364,7 +381,7 @@ mod tests {
         let mut registry = RequestRegistry::new(Duration::from_secs(5));
         let request_owner = owner(":1.2");
         registry
-            .begin_at("req-1", request_owner.clone(), now)
+            .begin_at("req-1", request_owner.clone(), None, now)
             .expect("request should be created");
         registry
             .transition_at("req-1", &request_owner, RequestState::AwaitingUser, now)
@@ -378,5 +395,24 @@ mod tests {
             )
             .expect("request should transition to failed");
         assert_eq!(registry.state("req-1"), Some(RequestState::Failed));
+    }
+
+    #[test]
+    fn begin_records_parent_window_context() {
+        let now = Instant::now();
+        let mut registry = RequestRegistry::new(Duration::from_secs(5));
+        registry
+            .begin_at(
+                "req-window",
+                owner(":1.9"),
+                Some(ParentWindowContext::X11 { window_id: 42 }),
+                now,
+            )
+            .expect("request should be created");
+
+        assert_eq!(
+            registry.parent_window("req-window"),
+            Some(Some(ParentWindowContext::X11 { window_id: 42 }))
+        );
     }
 }
