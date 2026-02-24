@@ -126,7 +126,12 @@ fn parse_fields(line: &str) -> Result<HashMap<&str, &str>, String> {
         let (key, value) = token
             .split_once('=')
             .ok_or_else(|| format!("invalid token: {token}"))?;
-        fields.insert(key, value);
+        if !matches!(key, "id" | "sender" | "app_id" | "parent" | "state") {
+            return Err(format!("unknown field: {key}"));
+        }
+        if fields.insert(key, value).is_some() {
+            return Err(format!("duplicate field: {key}"));
+        }
     }
     Ok(fields)
 }
@@ -206,6 +211,33 @@ mod tests {
         let path = unique_temp_file();
         fs::write(&path, "id=req-1\tsender=:1.2\tstate=bogus\n")
             .expect("test file should be written");
+
+        let loaded = load_registry(&path, Duration::from_secs(5));
+        assert!(loaded.is_err());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn duplicate_fields_fail_to_load() {
+        let path = unique_temp_file();
+        fs::write(&path, "id=req-1\tid=req-2\tsender=:1.2\tstate=pending\n")
+            .expect("test file should be written");
+
+        let loaded = load_registry(&path, Duration::from_secs(5));
+        assert!(loaded.is_err());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn unknown_fields_fail_to_load() {
+        let path = unique_temp_file();
+        fs::write(
+            &path,
+            "id=req-1\tsender=:1.2\tstate=pending\tunexpected=1\n",
+        )
+        .expect("test file should be written");
 
         let loaded = load_registry(&path, Duration::from_secs(5));
         assert!(loaded.is_err());
