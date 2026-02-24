@@ -20,3 +20,4 @@ Current scaffold includes:
 1. Start daemon: `cargo run -p garwarp -- daemon`
 2. Check health: `cargo run -p garwarpctl -- status`
 3. Stop daemon: `cargo run -p garwarpctl -- stop`
+4. Verify D-Bus activation: `./scripts/test-dbus-activation.sh`
