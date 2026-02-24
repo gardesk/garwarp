@@ -8,6 +8,7 @@ use garwarp_ipc::{ControlRequest, ControlResponse, HealthStatus, StatusResponse}
 
 use crate::config::Config;
 use crate::dbus::{self, SessionNameGuard};
+use crate::error::{PortalError, map_portal_error};
 use crate::lock::SingleInstanceGuard;
 use crate::logging;
 use crate::request::RequestRegistry;
@@ -87,9 +88,12 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
             state.running = false;
             ControlResponse::AckStopping
         }
-        None => ControlResponse::Error {
-            reason: "invalid_request".to_string(),
-        },
+        None => {
+            let mapping = map_portal_error(&PortalError::InvalidRequestPayload);
+            ControlResponse::Error {
+                reason: mapping.reason.to_string(),
+            }
+        }
     };
 
     let stream = reader.into_inner();
@@ -190,5 +194,33 @@ mod tests {
         assert_eq!(response, ControlResponse::AckStopping);
         assert_eq!(state.health, HealthStatus::Stopping);
         assert!(!state.running);
+    }
+
+    #[test]
+    fn invalid_request_uses_stable_error_reason() {
+        let (mut client, server) = UnixStream::pair().expect("pair should be created");
+        client
+            .write_all(b"unknown\n")
+            .expect("invalid request should be written");
+
+        let mut state = DaemonState {
+            health: HealthStatus::Healthy,
+            requests: RequestRegistry::new(Duration::from_secs(5)),
+            running: true,
+        };
+        handle_connection(server, &mut state).expect("request should be handled");
+
+        let mut response_line = String::new();
+        let mut reader = BufReader::new(client);
+        reader
+            .read_line(&mut response_line)
+            .expect("response should be readable");
+        let response = ControlResponse::parse_line(&response_line).expect("response should parse");
+        assert_eq!(
+            response,
+            ControlResponse::Error {
+                reason: "invalid_request".to_string(),
+            }
+        );
     }
 }
