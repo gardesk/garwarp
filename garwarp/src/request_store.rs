@@ -3,8 +3,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::request::{RequestOwner, RequestRecord, RequestRegistry, RequestState};
 use crate::window::parse_optional_parent_window;
@@ -45,7 +47,41 @@ pub fn persist_registry(path: &Path, registry: &RequestRegistry) -> io::Result<(
         output.push_str(&format_record_line(&record));
         output.push('\n');
     }
-    fs::write(path, output)
+    atomic_write(path, output.as_bytes())
+}
+
+fn atomic_write(path: &Path, data: &[u8]) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let temp_path = unique_temp_path(path);
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp_path)?;
+    #[cfg(unix)]
+    {
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    io::Write::write_all(&mut file, data)?;
+    file.sync_all()?;
+    drop(file);
+
+    fs::rename(&temp_path, path)?;
+    Ok(())
+}
+
+fn unique_temp_path(path: &Path) -> std::path::PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state");
+    parent.join(format!(".{file_name}.tmp-{}-{nanos}", std::process::id()))
 }
 
 fn format_record_line(record: &RequestRecord) -> String {
@@ -173,6 +209,38 @@ mod tests {
 
         let loaded = load_registry(&path, Duration::from_secs(5));
         assert!(loaded.is_err());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn persist_overwrites_previous_contents() {
+        let path = unique_temp_file();
+        let mut first = RequestRegistry::new(Duration::from_secs(5));
+        first
+            .begin_at(
+                "req-first",
+                RequestOwner::new(":1.2", None),
+                None,
+                Instant::now(),
+            )
+            .expect("request should be created");
+        persist_registry(&path, &first).expect("first persist should succeed");
+
+        let mut second = RequestRegistry::new(Duration::from_secs(5));
+        second
+            .begin_at(
+                "req-second",
+                RequestOwner::new(":1.3", Some("org.test.App".to_string())),
+                None,
+                Instant::now(),
+            )
+            .expect("request should be created");
+        persist_registry(&path, &second).expect("second persist should succeed");
+
+        let loaded = load_registry(&path, Duration::from_secs(5)).expect("registry should load");
+        assert_eq!(loaded.state("req-first"), None);
+        assert_eq!(loaded.state("req-second"), Some(RequestState::Pending));
 
         let _ = fs::remove_file(path);
     }
