@@ -169,9 +169,9 @@ fn run(command: Command) -> io::Result<()> {
                     println!("in_flight={}", status.in_flight_requests);
                     Ok(())
                 }
-                ControlResponse::Error { reason } => {
-                    Err(io::Error::other(format!("daemon error: {reason}")))
-                }
+                ControlResponse::Error { code, reason } => Err(io::Error::other(format!(
+                    "daemon error: code={code} reason={reason}"
+                ))),
                 other => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("unexpected response: {other:?}"),
@@ -185,9 +185,9 @@ fn run(command: Command) -> io::Result<()> {
                     println!("stopping");
                     Ok(())
                 }
-                ControlResponse::Error { reason } => {
-                    Err(io::Error::other(format!("daemon error: {reason}")))
-                }
+                ControlResponse::Error { code, reason } => Err(io::Error::other(format!(
+                    "daemon error: code={code} reason={reason}"
+                ))),
                 other => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("unexpected response: {other:?}"),
@@ -212,9 +212,9 @@ fn run(command: Command) -> io::Result<()> {
                     println!("state={state}");
                     Ok(())
                 }
-                ControlResponse::Error { reason } => {
-                    Err(io::Error::other(format!("daemon error: {reason}")))
-                }
+                ControlResponse::Error { code, reason } => Err(io::Error::other(format!(
+                    "daemon error: code={code} reason={reason}"
+                ))),
                 other => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("unexpected response: {other:?}"),
@@ -239,9 +239,9 @@ fn run(command: Command) -> io::Result<()> {
                     println!("state={state}");
                     Ok(())
                 }
-                ControlResponse::Error { reason } => {
-                    Err(io::Error::other(format!("daemon error: {reason}")))
-                }
+                ControlResponse::Error { code, reason } => Err(io::Error::other(format!(
+                    "daemon error: code={code} reason={reason}"
+                ))),
                 other => Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("unexpected response: {other:?}"),

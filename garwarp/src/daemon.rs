@@ -127,6 +127,7 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
                     return write_response(
                         reader.into_inner(),
                         ControlResponse::Error {
+                            code: mapping.code as u32,
                             reason: mapping.reason.to_string(),
                         },
                     );
@@ -144,6 +145,7 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
                 Err(error) => {
                     let mapping = map_request_error(&error);
                     ControlResponse::Error {
+                        code: mapping.code as u32,
                         reason: mapping.reason.to_string(),
                     }
                 }
@@ -165,6 +167,7 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
                 Err(error) => {
                     let mapping = map_request_error(&error);
                     ControlResponse::Error {
+                        code: mapping.code as u32,
                         reason: mapping.reason.to_string(),
                     }
                 }
@@ -173,6 +176,7 @@ fn handle_connection(stream: UnixStream, state: &mut DaemonState) -> io::Result<
         None => {
             let mapping = map_portal_error(&PortalError::InvalidRequestPayload);
             ControlResponse::Error {
+                code: mapping.code as u32,
                 reason: mapping.reason.to_string(),
             }
         }
@@ -336,6 +340,7 @@ mod tests {
         assert_eq!(
             response,
             ControlResponse::Error {
+                code: 2,
                 reason: "invalid_request".to_string(),
             }
         );
@@ -399,6 +404,7 @@ mod tests {
         assert_eq!(
             response,
             ControlResponse::Error {
+                code: 2,
                 reason: "invalid_parent_window".to_string(),
             }
         );
@@ -436,6 +442,7 @@ mod tests {
         assert_eq!(
             response,
             ControlResponse::Error {
+                code: 2,
                 reason: "ownership_mismatch".to_string(),
             }
         );

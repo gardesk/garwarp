@@ -193,7 +193,7 @@ pub enum ControlResponse {
     Status(StatusResponse),
     AckStopping,
     AckRequest { id: String, state: String },
-    Error { reason: String },
+    Error { code: u32, reason: String },
 }
 
 impl ControlResponse {
@@ -210,7 +210,7 @@ impl ControlResponse {
             Self::AckRequest { id, state } => {
                 format!("ack request id={} state={}\n", id, state)
             }
-            Self::Error { reason } => format!("error reason={}\n", reason),
+            Self::Error { code, reason } => format!("error code={} reason={}\n", code, reason),
         }
     }
 
@@ -286,15 +286,30 @@ impl ControlResponse {
                 None => Err(ParseError::MissingField("ack")),
             },
             Some("error") => match parts.next() {
-                Some(reason_field) => {
-                    let (key, value) = reason_field
-                        .split_once('=')
-                        .ok_or(ParseError::InvalidField(reason_field.to_string()))?;
-                    if key != "reason" {
-                        return Err(ParseError::InvalidField(reason_field.to_string()));
+                Some(first_field) => {
+                    let mut code = None;
+                    let mut reason = None;
+                    let mut fields = vec![first_field];
+                    fields.extend(parts);
+
+                    for field in fields {
+                        let (key, value) = field
+                            .split_once('=')
+                            .ok_or(ParseError::InvalidField(field.to_string()))?;
+                        match key {
+                            "code" => {
+                                code =
+                                    Some(value.parse::<u32>().map_err(|_| {
+                                        ParseError::InvalidField(field.to_string())
+                                    })?);
+                            }
+                            "reason" => reason = Some(value.to_string()),
+                            _ => return Err(ParseError::InvalidField(field.to_string())),
+                        }
                     }
                     Ok(Self::Error {
-                        reason: value.to_string(),
+                        code: code.ok_or(ParseError::MissingField("code"))?,
+                        reason: reason.ok_or(ParseError::MissingField("reason"))?,
                     })
                 }
                 None => Err(ParseError::MissingField("reason")),
@@ -388,6 +403,10 @@ mod tests {
             ControlResponse::AckRequest {
                 id: "req-1".to_string(),
                 state: "pending".to_string(),
+            },
+            ControlResponse::Error {
+                code: 2,
+                reason: "invalid_request".to_string(),
             },
         ] {
             let line = response.to_line();
