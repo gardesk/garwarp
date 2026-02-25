@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -7,6 +8,14 @@ use garwarp_ipc::{
     ControlRequest, ControlResponse, DEFAULT_CONTROL_SOCKET, DEFAULT_RUNTIME_SUBDIR,
     PROTOCOL_VERSION, RequestTransitionTarget,
 };
+use zbus::{
+    blocking::Connection,
+    zvariant::{OwnedObjectPath, OwnedValue},
+};
+
+const BACKEND_DBUS_NAME: &str = "org.freedesktop.impl.portal.desktop.garwarp";
+const BACKEND_OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
+const PORTAL_RESPONSE_FAILED: u32 = 2;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -30,6 +39,7 @@ enum Command {
     Status,
     Stop,
     List,
+    PortalSmoke,
     Inspect {
         id: String,
     },
@@ -55,6 +65,7 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
         [command] if command == "status" => Ok(Command::Status),
         [command] if command == "stop" => Ok(Command::Stop),
         [command] if command == "list" => Ok(Command::List),
+        [command] if command == "portal-smoke" => Ok(Command::PortalSmoke),
         [command, id] if command == "inspect" => Ok(Command::Inspect { id: id.clone() }),
         [command] if command == "version" || command == "--version" || command == "-V" => {
             Ok(Command::Version)
@@ -224,6 +235,7 @@ fn run(command: Command) -> io::Result<()> {
                 )),
             }
         }
+        Command::PortalSmoke => run_portal_smoke(),
         Command::Inspect { id } => {
             let response = send_request(ControlRequest::InspectRequest { id })?;
             match response {
@@ -318,6 +330,169 @@ fn run(command: Command) -> io::Result<()> {
     }
 }
 
+fn run_portal_smoke() -> io::Result<()> {
+    let connection = Connection::session()
+        .map_err(|error| io::Error::other(format!("failed to connect to session bus: {error}")))?;
+    let sender = connection
+        .unique_name()
+        .ok_or_else(|| io::Error::other("connection missing unique bus name"))?
+        .as_str()
+        .to_string();
+    let sender_segment = sender_to_handle_segment(&sender)?;
+
+    let screenshot_handle = request_handle(&sender_segment, "smoke_screenshot")?;
+    let screenshot_response = call_portal_screenshot(&connection, screenshot_handle)?;
+    println!("screenshot_response={screenshot_response}");
+
+    let open_file_handle = request_handle(&sender_segment, "smoke_open_file")?;
+    let open_file_response = call_portal_open_file(&connection, open_file_handle)?;
+    println!("open_file_response={open_file_response}");
+
+    let choose_handle = request_handle(&sender_segment, "smoke_choose_app")?;
+    let choose_response = call_portal_choose_application(&connection, choose_handle.clone())?;
+    println!("choose_application_response={choose_response}");
+
+    call_portal_update_choices_expect_invalid_transition(&connection, choose_handle)?;
+    println!("update_choices=invalid_transition");
+    println!("portal_smoke=ok");
+    Ok(())
+}
+
+fn sender_to_handle_segment(sender: &str) -> io::Result<String> {
+    let sender = sender.strip_prefix(':').ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid sender unique name: {sender}"),
+        )
+    })?;
+    if sender.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid sender unique name: empty".to_string(),
+        ));
+    }
+
+    let mut segment = String::with_capacity(sender.len());
+    for ch in sender.chars() {
+        if ch.is_ascii_alphanumeric() {
+            segment.push(ch);
+            continue;
+        }
+        if matches!(ch, '.' | '_' | '-') {
+            segment.push('_');
+            continue;
+        }
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unsupported sender character: {ch}"),
+        ));
+    }
+
+    Ok(segment)
+}
+
+fn request_handle(sender_segment: &str, token: &str) -> io::Result<OwnedObjectPath> {
+    let path = format!("{BACKEND_OBJECT_PATH}/request/{sender_segment}/{token}");
+    OwnedObjectPath::try_from(path.clone()).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid request-handle path {path}: {error}"),
+        )
+    })
+}
+
+fn empty_options() -> HashMap<String, OwnedValue> {
+    HashMap::new()
+}
+
+fn call_portal_screenshot(connection: &Connection, handle: OwnedObjectPath) -> io::Result<u32> {
+    let message = connection
+        .call_method(
+            Some(BACKEND_DBUS_NAME),
+            BACKEND_OBJECT_PATH,
+            Some("org.freedesktop.impl.portal.Screenshot"),
+            "Screenshot",
+            &(handle, "org.test.App", "", empty_options()),
+        )
+        .map_err(|error| io::Error::other(format!("screenshot call failed: {error}")))?;
+    expect_failed_response(message)
+}
+
+fn call_portal_open_file(connection: &Connection, handle: OwnedObjectPath) -> io::Result<u32> {
+    let message = connection
+        .call_method(
+            Some(BACKEND_DBUS_NAME),
+            BACKEND_OBJECT_PATH,
+            Some("org.freedesktop.impl.portal.FileChooser"),
+            "OpenFile",
+            &(handle, "org.test.App", "", "Open", empty_options()),
+        )
+        .map_err(|error| io::Error::other(format!("open file call failed: {error}")))?;
+    expect_failed_response(message)
+}
+
+fn call_portal_choose_application(
+    connection: &Connection,
+    handle: OwnedObjectPath,
+) -> io::Result<u32> {
+    let choices = vec!["org.test.Viewer".to_string()];
+    let message = connection
+        .call_method(
+            Some(BACKEND_DBUS_NAME),
+            BACKEND_OBJECT_PATH,
+            Some("org.freedesktop.impl.portal.AppChooser"),
+            "ChooseApplication",
+            &(handle, "org.test.App", "", choices, empty_options()),
+        )
+        .map_err(|error| io::Error::other(format!("choose application call failed: {error}")))?;
+    expect_failed_response(message)
+}
+
+fn call_portal_update_choices_expect_invalid_transition(
+    connection: &Connection,
+    handle: OwnedObjectPath,
+) -> io::Result<()> {
+    let choices = vec!["org.test.Viewer".to_string()];
+    match connection.call_method(
+        Some(BACKEND_DBUS_NAME),
+        BACKEND_OBJECT_PATH,
+        Some("org.freedesktop.impl.portal.AppChooser"),
+        "UpdateChoices",
+        &(handle, choices),
+    ) {
+        Ok(_) => Err(io::Error::other(
+            "expected UpdateChoices to fail with invalid_transition".to_string(),
+        )),
+        Err(error) => {
+            let text = error.to_string();
+            if !text.contains("invalid_transition") {
+                return Err(io::Error::other(format!(
+                    "unexpected UpdateChoices error: {text}"
+                )));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn expect_failed_response(message: zbus::message::Message) -> io::Result<u32> {
+    let (response, results): (u32, HashMap<String, OwnedValue>) = message
+        .body()
+        .deserialize()
+        .map_err(|error| io::Error::other(format!("failed to decode method reply: {error}")))?;
+    if response != PORTAL_RESPONSE_FAILED {
+        return Err(io::Error::other(format!(
+            "unexpected portal response code: {response}"
+        )));
+    }
+    if !results.is_empty() {
+        return Err(io::Error::other(
+            "expected empty results map for placeholder implementation".to_string(),
+        ));
+    }
+    Ok(response)
+}
+
 fn send_request(request: ControlRequest) -> io::Result<ControlResponse> {
     let socket_path = control_socket_path();
     let mut stream = UnixStream::connect(&socket_path)?;
@@ -350,6 +525,7 @@ fn print_help() {
     println!("  status (default)");
     println!("  stop");
     println!("  list");
+    println!("  portal-smoke");
     println!("  inspect <id>");
     println!("  begin <id> <sender> [app_id|-] [parent_window|-]");
     println!("  transition <id> <sender> <awaiting_user|fulfilled|cancelled|failed> [app_id|-]");
@@ -360,7 +536,9 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, optional_value, parse_command, parse_transition_target};
+    use super::{
+        Command, optional_value, parse_command, parse_transition_target, sender_to_handle_segment,
+    };
     use garwarp_ipc::RequestTransitionTarget;
 
     #[test]
@@ -432,6 +610,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_portal_smoke_command() {
+        let args = vec!["portal-smoke".to_string()];
+        let command = parse_command(&args).expect("portal-smoke command should parse");
+        assert_eq!(command, Command::PortalSmoke);
+    }
+
+    #[test]
     fn parse_transition_target_rejects_unknown_state() {
         let parsed = parse_transition_target("bogus");
         assert!(parsed.is_err());
@@ -444,5 +629,11 @@ mod tests {
             optional_value("org.test.App"),
             Some("org.test.App".to_string())
         );
+    }
+
+    #[test]
+    fn sender_segment_is_derived_from_unique_name() {
+        let segment = sender_to_handle_segment(":1.42").expect("segment should parse");
+        assert_eq!(segment, "1_42");
     }
 }

@@ -316,6 +316,7 @@ name = "garwarpctl"
 version = "0.1.0"
 dependencies = [
  "garwarp-ipc",
+ "zbus",
 ]
 
 [[package]]
