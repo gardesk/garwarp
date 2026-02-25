@@ -12,7 +12,10 @@ Planning documents live in `docs/` and are currently local-only.
 ## Current Status
 1. Sprint 01 complete: workspace, daemon lifecycle, control protocol scaffold, activation files.
 2. Sprint 02 complete: control-plane hardening (idempotence, parser strictness, trusted peers, store durability/fallback, health recovery policy).
-3. Sprint 03 in progress: portal DBus interfaces are exported and introspectable at `/org/freedesktop/portal/desktop`.
+3. Sprint 03 in progress: screenshot/filechooser/appchooser interfaces export method skeletons at `/org/freedesktop/portal/desktop`.
+4. Request-handle parsing and deterministic request-id derivation are implemented (`/org/freedesktop/portal/desktop/request/<sender>/<token>` model).
+5. DBus method handling derives caller identity from message headers and rejects mismatched request-handle ownership.
+6. Typed option parsing foundations are in place for screenshot/filechooser/appchooser known keys.
 
 ## Local Commands
 1. Start daemon: `cargo run -p garwarp -- daemon`
