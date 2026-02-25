@@ -5,6 +5,7 @@ mod error;
 mod lock;
 mod logging;
 mod portal;
+mod portal_options;
 mod request;
 mod request_store;
 mod runtime;

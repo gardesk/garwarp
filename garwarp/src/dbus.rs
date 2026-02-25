@@ -9,6 +9,9 @@ use zbus::{
 
 use crate::error::{PortalError, map_portal_error};
 use crate::portal::derive_request_id_from_handle;
+use crate::portal_options::{
+    parse_app_chooser_options, parse_file_chooser_options, parse_screenshot_options,
+};
 
 pub const BACKEND_DBUS_NAME: &str = "org.freedesktop.impl.portal.desktop.garwarp";
 pub const BACKEND_OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
@@ -69,6 +72,9 @@ impl ScreenshotPortal {
         _options: HashMap<String, OwnedValue>,
         #[zbus(header)] header: Header<'_>,
     ) -> PortalMethodReply {
+        if let Err(error) = parse_screenshot_options(&_options) {
+            return failure_response(&error);
+        }
         if let Err(error) = request_id_for_call(&handle, header) {
             return failure_response(&error);
         }
@@ -83,6 +89,9 @@ impl ScreenshotPortal {
         _options: HashMap<String, OwnedValue>,
         #[zbus(header)] header: Header<'_>,
     ) -> PortalMethodReply {
+        if let Err(error) = parse_screenshot_options(&_options) {
+            return failure_response(&error);
+        }
         if let Err(error) = request_id_for_call(&handle, header) {
             return failure_response(&error);
         }
@@ -109,6 +118,9 @@ impl FileChooserPortal {
         _options: HashMap<String, OwnedValue>,
         #[zbus(header)] header: Header<'_>,
     ) -> PortalMethodReply {
+        if let Err(error) = parse_file_chooser_options(&_options) {
+            return failure_response(&error);
+        }
         if let Err(error) = request_id_for_call(&handle, header) {
             return failure_response(&error);
         }
@@ -124,6 +136,9 @@ impl FileChooserPortal {
         _options: HashMap<String, OwnedValue>,
         #[zbus(header)] header: Header<'_>,
     ) -> PortalMethodReply {
+        if let Err(error) = parse_file_chooser_options(&_options) {
+            return failure_response(&error);
+        }
         if let Err(error) = request_id_for_call(&handle, header) {
             return failure_response(&error);
         }
@@ -139,6 +154,9 @@ impl FileChooserPortal {
         _options: HashMap<String, OwnedValue>,
         #[zbus(header)] header: Header<'_>,
     ) -> PortalMethodReply {
+        if let Err(error) = parse_file_chooser_options(&_options) {
+            return failure_response(&error);
+        }
         if let Err(error) = request_id_for_call(&handle, header) {
             return failure_response(&error);
         }
@@ -165,6 +183,9 @@ impl AppChooserPortal {
         _options: HashMap<String, OwnedValue>,
         #[zbus(header)] header: Header<'_>,
     ) -> PortalMethodReply {
+        if let Err(error) = parse_app_chooser_options(&_options) {
+            return failure_response(&error);
+        }
         if let Err(error) = request_id_for_call(&handle, header) {
             return failure_response(&error);
         }
