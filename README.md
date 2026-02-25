@@ -16,6 +16,7 @@ Planning documents live in `docs/` and are currently local-only.
 4. Request-handle parsing and deterministic request-id derivation are implemented (`/org/freedesktop/portal/desktop/request/<sender>/<token>` model).
 5. DBus method handling derives caller identity from message headers and rejects mismatched request-handle ownership.
 6. Typed option parsing foundations are in place for screenshot/filechooser/appchooser known keys.
+7. DBus method dispatch now registers request lifecycle state through an internal portal dispatcher (current placeholder path ends in `failed`).
 
 ## Local Commands
 1. Start daemon: `cargo run -p garwarp -- daemon`
@@ -23,11 +24,13 @@ Planning documents live in `docs/` and are currently local-only.
 3. Stop daemon: `cargo run -p garwarpctl -- stop`
 4. Verify D-Bus activation: `./scripts/test-dbus-activation.sh`
 5. Verify DBus interfaces are exported: `./scripts/test-dbus-interfaces.sh`
-6. Verify request-store fallback: `./scripts/test-request-store-fallback.sh`
-7. Create mock request: `cargo run -p garwarpctl -- begin req-1 :1.2 - x11:0x2a`
-8. Transition mock request: `cargo run -p garwarpctl -- transition req-1 :1.2 awaiting_user`
-9. List known requests: `cargo run -p garwarpctl -- list`
-10. Inspect request snapshot: `cargo run -p garwarpctl -- inspect req-1`
+6. Verify DBus method dispatch: `./scripts/test-dbus-method-dispatch.sh`
+7. Verify request-store fallback: `./scripts/test-request-store-fallback.sh`
+8. Run direct portal smoke calls: `cargo run -p garwarpctl -- portal-smoke`
+9. Create mock request: `cargo run -p garwarpctl -- begin req-1 :1.2 - x11:0x2a`
+10. Transition mock request: `cargo run -p garwarpctl -- transition req-1 :1.2 awaiting_user`
+11. List known requests: `cargo run -p garwarpctl -- list`
+12. Inspect request snapshot: `cargo run -p garwarpctl -- inspect req-1`
 
 ## Runtime Tuning
 1. `GARWARP_REQUEST_TIMEOUT_MS`: timeout before in-flight requests are marked `expired`.
